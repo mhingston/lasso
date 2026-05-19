@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import type { RegisteredCommand, SourceInfo } from "@mariozechner/pi-coding-agent";
 import { type WorkflowRegistry } from "pi-duroxide";
 import { compileHarnessSpec, type CompiledHarnessWorkflow } from "../compiler/compile.js";
+import { planWorkflowRequest } from "../planner/synthesize.js";
+import type { PlannerResult } from "../planner/types.js";
 import { buildReferenceHarnessSpec, parseWorkflowRequest, type ReferenceWorkflowRequest } from "../reference/catalog.js";
 
 const compiledHarnesses = new Map<string, CompiledHarnessWorkflow>();
@@ -115,7 +117,26 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
     },
   };
 
-  return [compileCommand, runCommand, inspectCommand];
+  const planCommand: RegisteredCommand = {
+    name: "lasso:plan",
+    sourceInfo: extSourceInfo(),
+    description: "Draft a reference workflow request envelope from a freeform brief without compiling or running it.",
+    handler: async (args, ctx) => {
+      try {
+        if (!args.trim()) {
+          ctx.ui.notify("Usage: /lasso:plan <freeform brief>", "error");
+          return;
+        }
+
+        const result = planWorkflowRequest(args);
+        ctx.ui.notify(renderPlannerResult(result), "info");
+      } catch (error) {
+        ctx.ui.notify(formatCommandError(error), "error");
+      }
+    },
+  };
+
+  return [compileCommand, runCommand, inspectCommand, planCommand];
 }
 
 export function clearCompiledHarnesses(): void {
@@ -145,4 +166,47 @@ function formatCommandError(error: unknown): string {
   }
 
   return String(error);
+}
+
+function renderPlannerResult(result: PlannerResult): string {
+  if (result.status === "draft_request") {
+    const lines = [
+      `### Planner Draft \`${result.workflow}\``,
+      "",
+      "#### Rationale",
+      ...result.rationale.map(item => `- ${item}`),
+    ];
+
+    if (result.warnings.length > 0) {
+      lines.push("", "#### Warnings", ...result.warnings.map(item => `- ${item}`));
+    }
+
+    lines.push(
+      "",
+      "#### Request JSON",
+      "```json",
+      JSON.stringify(result.request, null, 2),
+      "```",
+      "",
+      "Next: pass this JSON into `/lasso:compile` or `/lasso:run` when you are ready.",
+    );
+
+    return lines.join("\n");
+  }
+
+  const lines = ["### Planner Needs Clarification"];
+
+  if (result.candidateWorkflow) {
+    lines.push("", `Likely workflow: \`${result.candidateWorkflow}\``);
+  }
+
+  lines.push("", "#### Reasons", ...result.reasons.map(item => `- ${item}`));
+
+  if (result.missingFields.length > 0) {
+    lines.push("", "#### Missing Fields", ...result.missingFields.map(item => `- ${item}`));
+  }
+
+  lines.push("", "#### Guidance", ...result.guidance.map(item => `- ${item}`));
+
+  return lines.join("\n");
 }

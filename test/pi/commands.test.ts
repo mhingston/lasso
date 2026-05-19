@@ -16,7 +16,12 @@ vi.mock("../../src/compiler/compile.js", () => ({
   compileHarnessSpec: vi.fn(),
 }));
 
+vi.mock("../../src/planner/synthesize.js", () => ({
+  planWorkflowRequest: vi.fn(),
+}));
+
 import { compileHarnessSpec } from "../../src/compiler/compile.js";
+import { planWorkflowRequest } from "../../src/planner/synthesize.js";
 import { buildReferenceHarnessSpec } from "../../src/reference/catalog.js";
 import { createLassoCommands, clearCompiledHarnesses } from "../../src/pi/commands.js";
 
@@ -65,19 +70,21 @@ describe("Lasso pi commands", () => {
     clearCompiledHarnesses();
     vi.mocked(buildReferenceHarnessSpec).mockReset();
     vi.mocked(compileHarnessSpec).mockReset();
+    vi.mocked(planWorkflowRequest).mockReset();
     vi.mocked(buildReferenceHarnessSpec).mockReturnValue(prSpec as any);
     vi.mocked(compileHarnessSpec).mockReturnValue(prCompiled as any);
     prCompiled.register.mockReset();
     patchCompiled.register.mockReset();
   });
 
-  it("creates compile, run, and inspect commands", () => {
+  it("creates compile, run, inspect, and plan commands", () => {
     const commands = createLassoCommands(createMockRegistry() as any);
 
     expect(commands.map(command => command.name)).toEqual([
       "lasso:compile",
       "lasso:run",
       "lasso:inspect",
+      "lasso:plan",
     ]);
   });
 
@@ -179,6 +186,91 @@ describe("Lasso pi commands", () => {
     await compileCommand?.handler(JSON.stringify({ workflow: "patch-validation", input: {} }), ctx as any);
 
     expect(ctx.ui.notify).toHaveBeenCalledWith("Invalid patch-validation input", "error");
+  });
+
+  it("plan command renders a draft request without compiling or running anything", async () => {
+    vi.mocked(planWorkflowRequest).mockReturnValue({
+      status: "draft_request",
+      workflow: "patch-validation",
+      request: patchRequest as any,
+      rationale: ["Classified as patch-validation workflow", "Baseline: HEAD"],
+      warnings: ["approvalRequired not specified; defaulting to false"],
+    });
+
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const planCommand = commands.find(command => command.name === "lasso:plan");
+    const ctx = createCommandContext();
+    const brief = "Validate the fix in /tmp/repo against HEAD";
+
+    await planCommand?.handler(brief, ctx as any);
+
+    expect(planWorkflowRequest).toHaveBeenCalledWith(brief);
+    expect(buildReferenceHarnessSpec).not.toHaveBeenCalled();
+    expect(compileHarnessSpec).not.toHaveBeenCalled();
+
+    const [message, level] = ctx.ui.notify.mock.calls[0];
+    expect(level).toBe("info");
+    expect(message).toContain("### Planner Draft `patch-validation`");
+    expect(message).toContain("#### Rationale");
+    expect(message).toContain("#### Warnings");
+    expect(message).toContain("```json");
+    expect(message).toContain('"workflow": "patch-validation"');
+    expect(message).toContain("/lasso:compile");
+    expect(message).toContain("/lasso:run");
+  });
+
+  it("plan command renders clarification output without emitting partial JSON", async () => {
+    vi.mocked(planWorkflowRequest).mockReturnValue({
+      status: "needs_clarification",
+      candidateWorkflow: "pr-review-merge",
+      reasons: ["PR review/merge workflow requires: repoPath, verificationCommands"],
+      missingFields: ["repoPath", "verificationCommands"],
+      guidance: ["Provide repoPath", "Provide verificationCommands"],
+    });
+
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const planCommand = commands.find(command => command.name === "lasso:plan");
+    const ctx = createCommandContext();
+
+    await planCommand?.handler("Review and merge this branch", ctx as any);
+
+    expect(planWorkflowRequest).toHaveBeenCalledWith("Review and merge this branch");
+    expect(buildReferenceHarnessSpec).not.toHaveBeenCalled();
+    expect(compileHarnessSpec).not.toHaveBeenCalled();
+
+    const [message, level] = ctx.ui.notify.mock.calls[0];
+    expect(level).toBe("info");
+    expect(message).toContain("### Planner Needs Clarification");
+    expect(message).toContain("Likely workflow: `pr-review-merge`");
+    expect(message).toContain("#### Missing Fields");
+    expect(message).toContain("repoPath");
+    expect(message).toContain("verificationCommands");
+    expect(message).not.toContain("```json");
+  });
+
+  it("plan command reports usage for an empty brief", async () => {
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const planCommand = commands.find(command => command.name === "lasso:plan");
+    const ctx = createCommandContext();
+
+    await planCommand?.handler("   ", ctx as any);
+
+    expect(planWorkflowRequest).not.toHaveBeenCalled();
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Usage: /lasso:plan <freeform brief>", "error");
+  });
+
+  it("plan command reports unexpected planner failures cleanly", async () => {
+    vi.mocked(planWorkflowRequest).mockImplementation(() => {
+      throw new Error("Internal planner error");
+    });
+
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const planCommand = commands.find(command => command.name === "lasso:plan");
+    const ctx = createCommandContext();
+
+    await planCommand?.handler("Review and merge this branch", ctx as any);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Internal planner error", "error");
   });
 });
 
