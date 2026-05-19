@@ -1,0 +1,514 @@
+import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { registerWorkflow, type RegisteredWorkflow, type WorkflowContext, type WorkflowOptions, type YieldItem } from "pi-duroxide";
+import type { CirMergeNode, CirNode, CirTransition, CirWorkflow } from "../cir/types.js";
+import { lowerHarnessSpecToCir } from "../cir/lower.js";
+import { validateCirWorkflow } from "../cir/validate.js";
+import type { HarnessSpec } from "../spec/types.js";
+import { validateHarnessSpec } from "../spec/validate.js";
+import {
+  buildShellCommand,
+  evaluateConditionExpression,
+  interpretVerificationResult,
+  recordTrace,
+  runWithRetry,
+  type ExecutionState,
+  type ExecutionTraceEntry,
+  type VerificationOutcome,
+} from "./runtime-helpers.js";
+
+export interface CompiledHarnessResult {
+  status: "completed";
+  terminalNodeId: string;
+  result: unknown;
+  outputs: Record<string, unknown>;
+  trace: ExecutionTraceEntry[];
+}
+
+export interface CompiledHarnessWorkflow {
+  name: string;
+  spec: HarnessSpec;
+  cir: CirWorkflow;
+  workflows: RegisteredWorkflow[];
+  register(pi?: ExtensionAPI): void;
+}
+
+interface ParallelMergePlan {
+  mergeNodeId: string;
+  branchNodeIds: string[];
+}
+
+export function compileHarnessSpec(spec: HarnessSpec): CompiledHarnessWorkflow {
+  const specValidation = validateHarnessSpec(spec);
+  if (!specValidation.valid) {
+    throw new Error(`HarnessSpec validation failed:\n- ${specValidation.errors.join("\n- ")}`);
+  }
+
+  const cir = lowerHarnessSpecToCir(spec);
+  const cirValidation = validateCirWorkflow(cir);
+  if (!cirValidation.valid) {
+    throw new Error(`CIR validation failed:\n- ${cirValidation.errors.join("\n- ")}`);
+  }
+
+  const compiledSpec = structuredClone(spec);
+  const compiledCir = structuredClone(cir);
+  const nodeMap = new Map(compiledCir.nodes.map(node => [node.id, node]));
+  const outgoingTransitions = buildTransitionMap(compiledCir.transitions);
+  const incomingTransitions = buildIncomingTransitionMap(compiledCir.transitions);
+  validateVerificationSupport(nodeMap);
+  const parallelMergePlans = buildParallelMergePlans(compiledCir, nodeMap, outgoingTransitions);
+  validateMergeSupport(nodeMap, incomingTransitions, parallelMergePlans);
+
+  const workflows: RegisteredWorkflow[] = [
+    {
+      name: compiledCir.name,
+      generator: createWorkflowGenerator(compiledCir, nodeMap, outgoingTransitions, parallelMergePlans),
+      options: buildWorkflowOptions(compiledSpec),
+      sourceInfo: {
+        source: "lasso",
+      },
+    },
+  ];
+
+  return {
+    name: compiledSpec.name,
+    spec: compiledSpec,
+    cir: compiledCir,
+    workflows,
+    register(_pi?: ExtensionAPI) {
+      for (const workflow of workflows) {
+        registerWorkflow(workflow.name, workflow.generator, workflow.options);
+      }
+    },
+  };
+}
+
+function createWorkflowGenerator(
+  cir: CirWorkflow,
+  nodeMap: Map<string, CirNode>,
+  outgoingTransitions: Map<string, CirTransition[]>,
+  parallelMergePlans: Map<string, ParallelMergePlan>,
+) {
+  return function* compiledHarnessWorkflow(
+    ctx: WorkflowContext,
+    input: unknown,
+  ): Generator<YieldItem, CompiledHarnessResult, unknown> {
+    const state: ExecutionState = {
+      input,
+      outputs: {},
+      trace: [],
+    };
+    let currentNodeId = cir.entryNodeId;
+
+    while (true) {
+      const node = getNode(nodeMap, currentNodeId);
+
+      if (node.kind === "condition") {
+        const matched = evaluateConditionExpression(node.action.conditionExpr, state);
+        recordTrace(ctx, state, node, matched ? "condition-true" : "condition-false");
+        currentNodeId = getConditionTransition(node, outgoingTransitions, matched).to;
+        continue;
+      }
+
+      if (node.kind === "merge") {
+        const mergeOutput = buildMergeOutput(node, state.outputs);
+        state.outputs[node.id] = mergeOutput;
+        recordTrace(ctx, state, node, "merge", {
+          waitFor: [...node.action.join.waitFor],
+          strategy: node.action.join.strategy,
+        });
+
+        const successTransitions = getSuccessTransitions(node.id, outgoingTransitions);
+        if (successTransitions.length === 0) {
+          return buildCompletedResult(state, node.id);
+        }
+
+        currentNodeId = successTransitions[0].to;
+        continue;
+      }
+
+      const output = yield* executeNodeWithPolicies(ctx, state, node, nodeMap, cir.name);
+      state.outputs[node.id] = output;
+
+      const parallelMergePlan = parallelMergePlans.get(node.id);
+      if (parallelMergePlan) {
+        const branchNodes = parallelMergePlan.branchNodeIds.map(branchNodeId => getNode(nodeMap, branchNodeId));
+        const mergeNode = getNode(nodeMap, parallelMergePlan.mergeNodeId);
+        for (const branchNode of branchNodes) {
+          recordTrace(ctx, state, branchNode, "enter", {
+            parallel: true,
+          });
+        }
+
+        let branchResults: unknown[];
+        try {
+          branchResults = (yield ctx.all(
+            branchNodes.map(branchNode => createActionYieldItem(ctx, branchNode, cir.name)),
+          )) as unknown[];
+        } catch (error) {
+          state.outputs[mergeNode.id] = {
+            status: "failed",
+            error: formatUnknownError(error),
+          };
+          recordTrace(ctx, state, mergeNode, "failure", {
+            parallel: true,
+            message: formatUnknownError(error),
+          });
+          throw error;
+        }
+
+        branchNodes.forEach((branchNode, index) => {
+          state.outputs[branchNode.id] = branchResults[index];
+          recordTrace(ctx, state, branchNode, "success", {
+            parallel: true,
+          });
+        });
+
+        currentNodeId = parallelMergePlan.mergeNodeId;
+        continue;
+      }
+
+      const successTransitions = getSuccessTransitions(node.id, outgoingTransitions);
+      if (successTransitions.length === 0) {
+        return buildCompletedResult(state, node.id);
+      }
+
+      currentNodeId = successTransitions[0].to;
+    }
+  };
+}
+
+function buildTransitionMap(transitions: CirTransition[]): Map<string, CirTransition[]> {
+  const transitionMap = new Map<string, CirTransition[]>();
+
+  for (const transition of transitions) {
+    const items = transitionMap.get(transition.from) ?? [];
+    items.push(transition);
+    transitionMap.set(transition.from, items);
+  }
+
+  return transitionMap;
+}
+
+function buildIncomingTransitionMap(transitions: CirTransition[]): Map<string, CirTransition[]> {
+  const transitionMap = new Map<string, CirTransition[]>();
+
+  for (const transition of transitions) {
+    const items = transitionMap.get(transition.to) ?? [];
+    items.push(transition);
+    transitionMap.set(transition.to, items);
+  }
+
+  return transitionMap;
+}
+
+function buildParallelMergePlans(
+  cir: CirWorkflow,
+  nodeMap: Map<string, CirNode>,
+  outgoingTransitions: Map<string, CirTransition[]>,
+): Map<string, ParallelMergePlan> {
+  const plans = new Map<string, ParallelMergePlan>();
+
+  for (const node of cir.nodes) {
+    const successTransitions = getSuccessTransitions(node.id, outgoingTransitions);
+    if (successTransitions.length <= 1) {
+      continue;
+    }
+
+    const branchNodes = successTransitions.map(transition => getNode(nodeMap, transition.to));
+    const branchSuccessTargets = branchNodes.map(branchNode => {
+      if (branchNode.kind === "condition" || branchNode.kind === "merge") {
+        throw new Error(`Unsupported parallel merge shape at node ${node.id}: branch node ${branchNode.id} is not directly executable`);
+      }
+
+      if (branchNode.retry || branchNode.verification || branchNode.failureRouting) {
+        throw new Error(
+          `Unsupported parallel merge shape at node ${node.id}: branch node ${branchNode.id} carries retry, verification, or failure-routing metadata`,
+        );
+      }
+
+      const branchTransitions = outgoingTransitions.get(branchNode.id) ?? [];
+      const directSuccessTransitions = branchTransitions.filter(transition => transition.when === "success");
+      const branchConditionTransitions = branchTransitions.filter(transition => transition.when !== "success");
+
+      if (branchConditionTransitions.length > 0 || directSuccessTransitions.length !== 1) {
+        throw new Error(`Unsupported parallel merge shape at node ${node.id}: branch node ${branchNode.id} must transition directly to a single merge node`);
+      }
+
+      return directSuccessTransitions[0].to;
+    });
+
+    const mergeNodeId = branchSuccessTargets[0];
+    if (!branchSuccessTargets.every(targetNodeId => targetNodeId === mergeNodeId)) {
+      throw new Error(`Unsupported parallel merge shape at node ${node.id}: branches do not converge on the same merge node`);
+    }
+
+    const mergeNode = getNode(nodeMap, mergeNodeId);
+    if (mergeNode.kind !== "merge") {
+      throw new Error(`Unsupported parallel merge shape at node ${node.id}: target ${mergeNodeId} is not a merge node`);
+    }
+
+    const waitForSet = new Set(mergeNode.action.join.waitFor);
+    const branchNodeIds = branchNodes.map(branchNode => branchNode.id);
+    if (
+      waitForSet.size !== branchNodeIds.length
+      || branchNodeIds.some(branchNodeId => !waitForSet.has(branchNodeId))
+    ) {
+      throw new Error(`Unsupported parallel merge shape at node ${node.id}: merge node ${mergeNode.id} must wait for the forked branch nodes directly`);
+    }
+
+    plans.set(node.id, {
+      mergeNodeId: mergeNode.id,
+      branchNodeIds,
+    });
+  }
+
+  return plans;
+}
+
+function validateMergeSupport(
+  nodeMap: Map<string, CirNode>,
+  incomingTransitions: Map<string, CirTransition[]>,
+  parallelMergePlans: Map<string, ParallelMergePlan>,
+): void {
+  const parallelMergeNodeIds = new Set(Array.from(parallelMergePlans.values(), plan => plan.mergeNodeId));
+
+  for (const node of nodeMap.values()) {
+    if (node.kind !== "merge") {
+      continue;
+    }
+
+    for (const waitForNodeId of node.action.join.waitFor) {
+      const waitForNode = getNode(nodeMap, waitForNodeId);
+      if (waitForNode.kind === "condition" || waitForNode.kind === "merge") {
+        throw new Error(
+          `Merge node ${node.id} cannot wait for non-executable node ${waitForNodeId} of kind "${waitForNode.kind}"`,
+        );
+      }
+    }
+
+    if (parallelMergeNodeIds.has(node.id)) {
+      continue;
+    }
+
+    const mergeIncomingTransitions = (incomingTransitions.get(node.id) ?? []).filter(transition => transition.when === "success");
+    const isDirectSequentialMerge =
+      node.action.join.waitFor.length === 1
+      && mergeIncomingTransitions.length === 1
+      && mergeIncomingTransitions[0]?.from === node.action.join.waitFor[0];
+
+    if (!isDirectSequentialMerge) {
+      throw new Error(`Unsupported merge execution shape for merge node ${node.id}`);
+    }
+  }
+}
+
+function validateVerificationSupport(nodeMap: Map<string, CirNode>): void {
+  for (const node of nodeMap.values()) {
+    if (!node.verification || node.verification.length === 0) {
+      continue;
+    }
+
+    for (const hook of node.verification) {
+      const verifierNode = getNode(nodeMap, hook.checkNodeId);
+      if (verifierNode.verification && verifierNode.verification.length > 0) {
+        throw new Error(`Verifier node ${verifierNode.id} cannot carry nested verification hooks`);
+      }
+    }
+  }
+}
+
+function buildWorkflowOptions(spec: HarnessSpec): WorkflowOptions {
+  return {
+    description: `Compiled Lasso harness ${spec.name}`,
+    ...(spec.executionPolicy?.timeout !== undefined
+      ? { timeoutMs: spec.executionPolicy.timeout * 1000 }
+      : {}),
+  };
+}
+
+function getSuccessTransitions(
+  nodeId: string,
+  outgoingTransitions: Map<string, CirTransition[]>,
+): CirTransition[] {
+  return (outgoingTransitions.get(nodeId) ?? []).filter(transition => transition.when === "success");
+}
+
+function getConditionTransition(
+  node: Extract<CirNode, { kind: "condition" }>,
+  outgoingTransitions: Map<string, CirTransition[]>,
+  matched: boolean,
+): CirTransition {
+  const when = matched ? "condition-true" : "condition-false";
+  const transition = (outgoingTransitions.get(node.id) ?? []).find(item => item.when === when);
+  if (!transition) {
+    throw new Error(`Condition node ${node.id} is missing a ${when} transition`);
+  }
+  return transition;
+}
+
+function getNode(nodeMap: Map<string, CirNode>, nodeId: string): CirNode {
+  const node = nodeMap.get(nodeId);
+  if (!node) {
+    throw new Error(`Compiled workflow is missing node ${nodeId}`);
+  }
+  return node;
+}
+
+function* executeNodeWithPolicies(
+  ctx: WorkflowContext,
+  state: ExecutionState,
+  node: Exclude<CirNode, { kind: "condition" | "merge" }>,
+  nodeMap: Map<string, CirNode>,
+  workflowName: string,
+): Generator<YieldItem, unknown, unknown> {
+  const verificationRetryCounts = new Map<string, number>();
+
+  while (true) {
+    delete state.outputs[node.id];
+
+    const output = yield* runWithRetry(ctx, state, node, function* () {
+      recordTrace(ctx, state, node, "enter");
+      const result = yield createActionYieldItem(ctx, node, workflowName);
+      recordTrace(ctx, state, node, "success");
+      return result;
+    });
+
+    state.outputs[node.id] = output;
+    const verificationOutcome = yield* executeVerificationHooks(ctx, state, node, nodeMap, workflowName);
+
+    if (verificationOutcome.status === "pass" || verificationOutcome.status === "warn") {
+      return output;
+    }
+
+    if (verificationOutcome.status === "block") {
+      throw new Error(verificationOutcome.message);
+    }
+
+    const retryCount = verificationRetryCounts.get(verificationOutcome.hook.checkNodeId) ?? 0;
+    if (retryCount + 1 >= verificationOutcome.maxAttempts) {
+      throw new Error(`Verification retry exhausted for node ${node.id} via ${verificationOutcome.hook.checkNodeId}`);
+    }
+
+    verificationRetryCounts.set(verificationOutcome.hook.checkNodeId, retryCount + 1);
+    recordTrace(ctx, state, node, "retry", {
+      reason: "verification",
+      hook: verificationOutcome.hook.checkNodeId,
+      attemptNumber: retryCount + 2,
+    });
+  }
+}
+
+function* executeVerificationHooks(
+  ctx: WorkflowContext,
+  state: ExecutionState,
+  node: Exclude<CirNode, { kind: "condition" | "merge" }>,
+  nodeMap: Map<string, CirNode>,
+  workflowName: string,
+): Generator<YieldItem, VerificationOutcome, unknown> {
+  if (!node.verification || node.verification.length === 0) {
+    return { status: "pass" };
+  }
+
+  for (const hook of node.verification) {
+    const verifierNode = getNode(nodeMap, hook.checkNodeId);
+    if (verifierNode.kind === "condition" || verifierNode.kind === "merge") {
+      throw new Error(`Verification node ${verifierNode.id} is not directly executable`);
+    }
+
+    const verifierOutput = yield* runWithRetry(ctx, state, verifierNode, function* () {
+      recordTrace(ctx, state, verifierNode, "enter", {
+        verificationFor: node.id,
+      });
+      const result = yield createActionYieldItem(ctx, verifierNode, workflowName);
+      recordTrace(ctx, state, verifierNode, "success", {
+        verificationFor: node.id,
+      });
+      return result;
+    });
+    state.outputs[verifierNode.id] = verifierOutput;
+
+    const outcome = interpretVerificationResult(hook, verifierOutput);
+    if (outcome.status === "pass") {
+      recordTrace(ctx, state, node, "verification-pass", {
+        checkNodeId: hook.checkNodeId,
+      });
+      continue;
+    }
+
+    if (outcome.status === "warn") {
+      recordTrace(ctx, state, node, "verification-fail", {
+        checkNodeId: hook.checkNodeId,
+        warning: true,
+      });
+      continue;
+    }
+
+    recordTrace(ctx, state, node, "verification-fail", {
+      checkNodeId: hook.checkNodeId,
+    });
+    return outcome;
+  }
+
+  return { status: "pass" };
+}
+
+function createActionYieldItem(
+  ctx: WorkflowContext,
+  node: Exclude<CirNode, { kind: "condition" | "merge" }>,
+  workflowName: string,
+): YieldItem {
+  switch (node.kind) {
+    case "tool":
+      return ctx.pi.tool("bash", {
+        command: buildShellCommand(node.action.tool, node.action.args, node.action.cwd, node.action.env),
+        description: `Lasso tool node ${node.id}`,
+      });
+    case "llm": {
+      const messages = [];
+      if (node.action.system) {
+        messages.push({
+          role: "system",
+          content: [{ type: "text", text: node.action.system }],
+        });
+      }
+      messages.push({
+        role: "user",
+        content: [{ type: "text", text: node.action.prompt }],
+      });
+      return ctx.pi.llm(messages, {
+        model: node.action.model,
+      });
+    }
+    case "human":
+      return ctx.waitForEvent(`lasso:human:${workflowName}:${node.id}`);
+    case "subworkflow":
+      return ctx.scheduleSubOrchestration(node.action.specRef, node.action.inputs ?? {});
+  }
+}
+
+function buildMergeOutput(node: CirMergeNode, outputs: Record<string, unknown>): Record<string, unknown> {
+  const missingNodeIds = node.action.join.waitFor.filter(waitForNodeId => !(waitForNodeId in outputs));
+  if (missingNodeIds.length > 0) {
+    throw new Error(`Merge node ${node.id} is missing outputs for: ${missingNodeIds.join(", ")}`);
+  }
+
+  return Object.fromEntries(node.action.join.waitFor.map(waitForNodeId => [waitForNodeId, outputs[waitForNodeId]]));
+}
+
+function buildCompletedResult(state: ExecutionState, terminalNodeId: string): CompiledHarnessResult {
+  return {
+    status: "completed",
+    terminalNodeId,
+    result: structuredClone(state.outputs[terminalNodeId]),
+    outputs: structuredClone(state.outputs),
+    trace: structuredClone(state.trace),
+  };
+}
+
+function formatUnknownError(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+
+  return String(error);
+}

@@ -1,0 +1,21 @@
+{
+  "name": "lasso",
+  "type": "module",
+  "scripts": {
+    "build": "echo 'nothing to build'",
+    "check": "echo 'nothing to check'",
+    "test": "vitest --run"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "pi-duroxide": "file:.."
+  },
+  "devDependencies": {
+    "vitest": "^3.2.4"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
