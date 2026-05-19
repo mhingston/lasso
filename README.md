@@ -1,6 +1,6 @@
 # Lasso
 
-Lasso is a workflow compiler layered on top of `pi-duroxide`. It validates a declarative `HarnessSpec`, lowers it to CIR, compiles it into replay-safe workflows, and exposes a thin pi adapter for compile/run/inspect operations.
+Lasso is a workflow compiler layered on top of `pi-duroxide`. It validates a declarative `HarnessSpec`, lowers it to CIR, compiles it into replay-safe workflows, and exposes a thin pi adapter for plan/compile/run/inspect operations.
 
 ## Standalone repository
 
@@ -37,17 +37,49 @@ The original simulated PR review + merge flow. It uses tool nodes to inspect the
 
 ## Pi adapter commands
 
-When the Lasso extension is loaded, it first boots the underlying `pi-duroxide` workflow extension and then adds three slash commands:
+When the Lasso extension is loaded, it first boots the underlying `pi-duroxide` workflow extension and then adds four slash commands:
 
+- `/lasso:plan <freeform brief>`
 - `/lasso:compile <workflow request JSON>`
 - `/lasso:run <workflow request JSON>`
 - `/lasso:inspect [workflow-name]`
+
+`plan` is a deterministic drafting step. It classifies a freeform brief into either `patch-validation` or `pr-review-merge` and returns one of two outcomes:
+
+1. a draft workflow request JSON envelope you can pass into `compile` or `run`
+2. a clarification result with missing fields and concrete next-step guidance
+
+`plan` does **not** compile, register, or run anything in v1.
 
 `compile` builds the reference `HarnessSpec`, validates it, lowers it to CIR, and stores the compiled artifact in memory.
 
 `run` compiles the same reference workflow, registers it with `pi-duroxide`, and starts an orchestration instance.
 
 `inspect` shows the compiled spec, the lowered CIR, and the current workflow instances reported by the durable runtime.
+
+### `/lasso:plan`
+
+The planner is intentionally rule-based and only supports the two built-in reference workflow families:
+
+- `patch-validation`
+- `pr-review-merge`
+
+It does not guess missing required fields. If the brief does not clearly provide required values such as `repoPath`, branch names, `baselineRef`, `reviewInstructions`, or command lists, Lasso returns a clarification response instead of partial JSON.
+
+For a successful draft, the command output includes:
+
+1. the chosen workflow
+2. rationale bullets
+3. warnings, if any
+4. a fenced JSON block with the exact request envelope
+5. a hint to use `/lasso:compile` or `/lasso:run`
+
+For a clarification result, the command output includes:
+
+1. the likely workflow, if one exists
+2. reasons the planner stopped
+3. missing fields
+4. concrete guidance for what to add to the brief
 
 ## Workflow request envelopes
 
@@ -144,7 +176,8 @@ The MVP does **not** include:
 
 - live GitHub or `gh` integration
 - autonomous code authoring or patch generation (the workflow validates a fix you already have)
-- planner or synthesis layers
+- LLM-backed planner synthesis
+- automatic compile/run behavior from `/lasso:plan`
 - adaptive replanning
 - arbitrary generated TypeScript
 
@@ -153,5 +186,6 @@ The MVP does **not** include:
 - `src/spec/` — public spec types, schema, and validator
 - `src/cir/` — internal execution contract and lowering
 - `src/compiler/` — replay-safe workflow compiler and runtime helpers
+- `src/planner/` — deterministic brief-to-request synthesis
 - `src/reference/` — simulated/local PR review + merge reference workflow
 - `src/pi/` — thin pi adapter surface

@@ -57,6 +57,43 @@ describe("planWorkflowRequest", () => {
       }
     });
 
+    it("extracts a Windows repo path from a generic path label", () => {
+      const brief = `
+        PR review workflow:
+        path: "C:/Users/test/repo"
+        source branch: feature-xyz
+        target branch: main
+        verification commands: ["npm test"]
+        reviewInstructions: "Check for breaking changes"
+      `;
+
+      const result = planWorkflowRequest(brief);
+      expect(result.status).toBe("draft_request");
+
+      if (result.status === "draft_request" && result.request.workflow === "pr-review-merge") {
+        expect(result.request.input.repoPath).toBe("C:/Users/test/repo");
+      }
+    });
+
+    it("extracts colon-suffixed branch fields without requiring a space", () => {
+      const brief = `
+        PR review workflow:
+        repoPath: /Users/test/repo
+        source:feature-xyz
+        target:main
+        verification commands: ["npm test"]
+        reviewInstructions: "Check for breaking changes"
+      `;
+
+      const result = planWorkflowRequest(brief);
+      expect(result.status).toBe("draft_request");
+
+      if (result.status === "draft_request" && result.request.workflow === "pr-review-merge") {
+        expect(result.request.input.sourceBranch).toBe("feature-xyz");
+        expect(result.request.input.targetBranch).toBe("main");
+      }
+    });
+
     it("requires explicit reviewInstructions", () => {
       const brief = `
         Pull request review:
@@ -78,6 +115,24 @@ describe("planWorkflowRequest", () => {
   });
 
   describe("pr-review-merge missing fields", () => {
+    it("treats bare PR phrasing as a pr-review-merge request", () => {
+      const brief = `
+        Review the PR
+        repoPath: /repo
+        reviewInstructions: "Review carefully"
+        verification: ["test"]
+      `;
+
+      const result = planWorkflowRequest(brief);
+      expect(result.status).toBe("needs_clarification");
+
+      if (result.status === "needs_clarification") {
+        expect(result.candidateWorkflow).toBe("pr-review-merge");
+        expect(result.missingFields).toContain("sourceBranch");
+        expect(result.missingFields).toContain("targetBranch");
+      }
+    });
+
     it("flags missing repoPath", () => {
       const brief = `
         PR merge:
@@ -188,6 +243,27 @@ describe("planWorkflowRequest", () => {
           expect(input.reviewInstructions).toBe("Verify the bug is fixed");
           expect(input.approvalRequired).toBe(true);
         }
+      }
+    });
+
+    it("extracts colon-suffixed patch fields without requiring a space", () => {
+      const brief = `
+        Patch validation workflow:
+        repoPath: /home/user/project
+        baseline:main
+        candidate:fix-branch
+        reproduce commands: ["npm run reproduce-bug"]
+        verification commands: ["npm test"]
+        reviewInstructions: "Verify the bug is fixed"
+      `;
+
+      const result = planWorkflowRequest(brief);
+      expect(result.status).toBe("draft_request");
+
+      if (result.status === "draft_request" && result.request.workflow === "patch-validation") {
+        expect(result.request.input.baselineRef).toBe("main");
+        expect(result.request.input.candidateSource.kind).toBe("branch");
+        expect(result.request.input.candidateSource.value).toBe("fix-branch");
       }
     });
 

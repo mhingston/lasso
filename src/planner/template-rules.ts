@@ -8,6 +8,8 @@ export function classifyTemplate(brief: string): WorkflowTemplate {
     "pull request",
     "pr review",
     "pr merge",
+    "review the pr",
+    "merge the pr",
     " pr ",
     "source branch",
     "target branch"
@@ -73,7 +75,7 @@ function extractRepoPath(brief: string): string | undefined {
     /repoPath:\s*["']?([^"'\s\n]+)["']?/i,
     /repo:\s*["']?([^"'\s\n]+)["']?/i,
     /repository:\s*["']?([^"'\s\n]+)["']?/i,
-    /path:\s*["']?(\/[^"'\s\n]+)["']?/i  // Absolute path starting with /
+    /path:\s*["']?([A-Za-z]:[\\/][^"'\s\n]+|\/[^"'\s\n]+)["']?/i
   ];
   
   for (const pattern of patterns) {
@@ -89,7 +91,8 @@ function extractRepoPath(brief: string): string | undefined {
 function extractField(brief: string, keywords: string[]): string | undefined {
   for (const keyword of keywords) {
     const escapedKeyword = keyword.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    const pattern = new RegExp(`${escapedKeyword}\\s*[:\\s]+["']?([^"'\\s\\n,;]+)["']?`, "i");
+    const separatorPattern = keyword.endsWith(":") ? "\\s*" : "\\s*[:\\s]+";
+    const pattern = new RegExp(`${escapedKeyword}${separatorPattern}["']?([^"'\\s\\n,;]+)["']?`, "i");
     const match = brief.match(pattern);
     if (match && match[1]) {
       return match[1].trim();
