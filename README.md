@@ -2,12 +2,18 @@
 
 Lasso is a workflow compiler layered on top of `pi-duroxide`. It validates a declarative `HarnessSpec`, lowers it to CIR, compiles it into replay-safe workflows, and exposes a thin pi adapter for compile/run/inspect operations.
 
-## Local incubation model
+## Standalone repository
 
-Lasso currently lives in the same repository as `pi-duroxide`, but it is treated as a separate package above the durable runtime substrate.
+Lasso is now its own repository. `pi-duroxide` is a dependency, not a sibling package.
 
 - `pi-duroxide` owns workflow lifecycle, replay, timers, events, and runtime registration
 - Lasso owns spec validation, CIR lowering, compilation, reference workflow construction, and operator-facing commands
+
+Roadmap work continues here in the standalone `lasso` repository.
+
+### Local development bridge
+
+Currently, local development uses the cleaned `feature-lasso-mvp` worktree from the `pi-duroxide` repository as a temporary package-level bridge. This allows the standalone repo to build and test safely while the `pi-duroxide` package boundary stabilizes.
 
 ## Reference workflows
 
