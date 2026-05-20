@@ -6,8 +6,11 @@ Lasso is a local-first workflow compiler for pi. It sits on top of
 1. a compiler pipeline for turning a declarative `HarnessSpec` into a replay-safe durable workflow
 2. bundled local workflows and slash commands for common repository automation tasks
 
-Today, the built-in command surface focuses on **local validation and local merge flows**.
-The underlying compiler API is broader.
+Today, Lasso has two distinct operator layers:
+
+1. `/lasso:plan` and `/lasso:replan` focus on the bundled local workflows
+2. `/lasso:compile` and `/lasso:run` can now work with either bundled requests
+   or arbitrary `HarnessSpec` workflows
 
 ## Quick Start
 
@@ -26,8 +29,10 @@ pi install .
 Then, inside pi:
 
 1. Work against a **disposable repo or worktree**.
-2. Use `/lasso:plan <brief>` to draft a request for a bundled workflow.
-3. Review the generated JSON, then pass it into `/lasso:compile` or `/lasso:run`.
+2. Use `/lasso:plan <brief>` if you want Lasso to draft one of the bundled
+   workflows for you.
+3. Pass either a bundled request, a raw `HarnessSpec`, a `{spec|specPath,input?}`
+   envelope, or an absolute spec path into `/lasso:compile` or `/lasso:run`.
 4. Use `/lasso:inspect` to inspect the compiled spec, CIR, and runtime state.
 
 > **Safety:** Lasso checks out refs, applies patches, and merges branches in the
@@ -71,29 +76,29 @@ than fully autonomous hosted integrations.
 | --- | --- | --- |
 | Validate an existing patch or branch locally | Excellent fit | Use `patch-validation` |
 | Simulate a local PR review + merge flow | Excellent fit | Use `pr-review-merge` |
-| Compile your own workflow from code | Good fit | Use the compiler API |
+| Compile or run your own workflow from CLI or code | Good fit | Use `/lasso:compile`, `/lasso:run`, or the compiler API |
 | Run live GitHub PR automation | Not yet | Lasso is local-only today |
 | Ask Lasso to invent arbitrary new workflows from natural language | Not yet | Planner/replanner only understand bundled workflows |
 
 ## Does it work with any workflow?
 
-**Short answer:** not from the built-in slash commands, but yes at the compiler
-layer.
+**Short answer:** yes from `/lasso:compile` and `/lasso:run`, but not from
+`/lasso:plan` or `/lasso:replan`.
 
 Lasso currently has two distinct surfaces:
 
 | Surface | Scope today |
 | --- | --- |
-| `/lasso:plan`, `/lasso:replan`, `/lasso:compile`, `/lasso:run` | Only the bundled `patch-validation` and `pr-review-merge` workflows |
+| `/lasso:plan`, `/lasso:replan` | Only the bundled `patch-validation` and `pr-review-merge` workflows |
+| `/lasso:compile`, `/lasso:run` | Bundled workflow requests **or** arbitrary `HarnessSpec` workflows |
 | `validateHarnessSpec`, `lowerHarnessSpecToCir`, `compileHarnessSpec` | Any workflow you can express as a valid `HarnessSpec` |
 
-So if you are asking, **"Can I point the current README commands at any random
-workflow shape?"** — no, not today.
+So if you are asking, **"Can Lasso compile or run more than the two examples in
+this repo?"** — yes.
 
-If you are asking, **"Can Lasso compile more than the two examples in this
-repo?"** — yes. The package exports the generic spec/validation/lowering/compiler
-surface for custom workflows. What is still narrow is the operator-facing
-request catalog and the planner/replanner logic.
+If you are asking, **"Can Lasso plan or replan arbitrary workflows from natural
+language?"** — no, not today. The planner and replanner still only understand
+the bundled workflow families.
 
 ## Bundled workflows
 
@@ -138,8 +143,8 @@ these commands:
 | --- | --- | --- |
 | `/lasso:plan <freeform brief>` | You have an English brief and want a draft request | Returns a draft JSON request or a clarification result |
 | `/lasso:replan <replan request JSON>` | You have a previous request plus a real outcome | Returns a revised draft, `needs_operator_input`, or `stop` |
-| `/lasso:compile <workflow request JSON>` | You want to inspect what Lasso will register | Builds the bundled reference spec, validates it, lowers it to CIR, and stores the compiled artifact in memory |
-| `/lasso:run <workflow request JSON>` | You want to execute a bundled workflow locally | Compiles, registers, and starts the workflow |
+| `/lasso:compile <input>` | You want to inspect what Lasso will register | Compiles either a bundled request or a custom `HarnessSpec`, then stores the compiled artifact in memory |
+| `/lasso:run <input>` | You want to execute a workflow locally | Compiles, registers, and starts either a bundled request or a custom `HarnessSpec` |
 | `/lasso:inspect [workflow-name]` | You want to inspect the latest or named compiled workflow | Shows the compiled spec, CIR, and runtime state |
 
 ### `/lasso:plan`
@@ -168,10 +173,42 @@ It returns one of three outcomes:
 In v1, the replanner only supports the two bundled workflows. It never invents
 new branch names, candidate sources, or command lists.
 
+### Custom compile/run input shapes
+
+`/lasso:compile` and `/lasso:run` now accept four input forms:
+
+1. bundled workflow request JSON
+2. raw `HarnessSpec` JSON
+3. a generic custom-workflow envelope:
+
+   ```json
+   {
+     "spec": { "...": "..." },
+     "input": { "...": "optional runtime input" }
+   }
+   ```
+
+   or
+
+   ```json
+   {
+     "specPath": "/absolute/path/to/spec.json",
+     "input": { "...": "optional runtime input" }
+   }
+   ```
+
+4. a direct absolute spec path such as `/tmp/custom-spec.json` or
+   `path:/tmp/custom-spec.json`
+
+When you run a raw `HarnessSpec` or a direct spec path, Lasso treats that as a
+shorthand for `input: {}`. If your workflow needs a real runtime input payload,
+use the explicit `{spec|specPath,input}` envelope.
+
 ## Request examples
 
 Lasso commands accept either an explicit workflow envelope or the legacy raw
-`pr-review-merge` shorthand.
+`pr-review-merge` shorthand, and compile/run also accept custom `HarnessSpec`
+inputs.
 
 ### Preferred explicit envelope
 
@@ -266,9 +303,43 @@ For aborted attempts, provide `aborted: true` plus an explicit `abortReason`
 such as `setup-failure`, `retry-exhaustion`, `timeout`, `manual-stop`, or
 `unknown`.
 
+### Custom `HarnessSpec` compile
+
+```json
+{
+  "name": "custom-echo",
+  "graph": {
+    "entryNodeId": "echo",
+    "nodes": [
+      {
+        "id": "echo",
+        "kind": "tool",
+        "tool": "bash",
+        "args": ["-lc", "echo hello"]
+      }
+    ],
+    "edges": []
+  }
+}
+```
+
+### Custom `HarnessSpec` run with explicit runtime input
+
+```json
+{
+  "specPath": "/absolute/path/to/custom-echo.json",
+  "input": {
+    "message": "hello from runtime input"
+  }
+}
+```
+
 ## Custom workflows (advanced)
 
-If you need more than the two bundled workflows, use Lasso as a library.
+If you need more than the two bundled workflows, you now have two options:
+
+1. use `/lasso:compile` and `/lasso:run` directly with a custom `HarnessSpec`
+2. use Lasso as a library
 
 The generic package surface is:
 

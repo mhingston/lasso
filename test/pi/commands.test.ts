@@ -64,6 +64,21 @@ describe("Lasso pi commands", () => {
 
   const prSpec = { name: "pr-review-merge", graph: { entryNodeId: "start", nodes: [], edges: [] } };
   const patchSpec = { name: "patch-validation", graph: { entryNodeId: "run-baseline", nodes: [], edges: [] } };
+  const customSpec = {
+    name: "custom-echo",
+    graph: {
+      entryNodeId: "echo",
+      nodes: [
+        {
+          id: "echo",
+          kind: "tool" as const,
+          tool: "bash",
+          args: ["-lc", "echo hello"],
+        },
+      ],
+      edges: [],
+    },
+  };
 
   const prCompiled = {
     name: "pr-review-merge",
@@ -81,6 +96,14 @@ describe("Lasso pi commands", () => {
     register: vi.fn(),
   };
 
+  const customCompiled = {
+    name: "custom-echo",
+    spec: customSpec,
+    cir: { name: "custom-echo", entryNodeId: "echo", nodes: [], transitions: [] },
+    workflows: [],
+    register: vi.fn(),
+  };
+
   beforeEach(() => {
     clearCompiledHarnesses();
     vi.mocked(buildReferenceHarnessSpec).mockReset();
@@ -92,6 +115,7 @@ describe("Lasso pi commands", () => {
     vi.mocked(compileHarnessSpec).mockReturnValue(prCompiled as any);
     prCompiled.register.mockReset();
     patchCompiled.register.mockReset();
+    customCompiled.register.mockReset();
   });
 
   it("creates compile, run, inspect, plan, and replan commands", () => {
@@ -133,6 +157,20 @@ describe("Lasso pi commands", () => {
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Compiled `patch-validation`"), "info");
   });
 
+  it("compile command compiles raw HarnessSpec JSON without going through the reference builder", async () => {
+    vi.mocked(compileHarnessSpec).mockReturnValue(customCompiled as any);
+
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const compileCommand = commands.find(command => command.name === "lasso:compile");
+    const ctx = createCommandContext();
+
+    await compileCommand?.handler(JSON.stringify(customSpec), ctx as any);
+
+    expect(buildReferenceHarnessSpec).not.toHaveBeenCalled();
+    expect(compileHarnessSpec).toHaveBeenCalledWith(customSpec);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Compiled `custom-echo`"), "info");
+  });
+
   it("run command compiles, registers, and starts the pr-review-merge workflow from a legacy bundle", async () => {
     const registry = createMockRegistry();
     const commands = createLassoCommands(registry as any);
@@ -165,6 +203,40 @@ describe("Lasso pi commands", () => {
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Started `patch-validation`"), "info");
   });
 
+  it("run command starts a custom HarnessSpec with explicit runtime input", async () => {
+    vi.mocked(compileHarnessSpec).mockReturnValue(customCompiled as any);
+
+    const registry = createMockRegistry();
+    const commands = createLassoCommands(registry as any);
+    const runCommand = commands.find(command => command.name === "lasso:run");
+    const ctx = createCommandContext();
+    const request = {
+      spec: customSpec,
+      input: { memberId: "12345", dryRun: true },
+    };
+
+    await runCommand?.handler(JSON.stringify(request), ctx as any);
+
+    expect(buildReferenceHarnessSpec).not.toHaveBeenCalled();
+    expect(compileHarnessSpec).toHaveBeenCalledWith(customSpec);
+    expect(customCompiled.register).toHaveBeenCalledWith();
+    expect(registry.client.startOrchestration).toHaveBeenCalledWith("instance-123", "custom-echo", request.input);
+    expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Started `custom-echo`"), "info");
+  });
+
+  it("run command defaults raw custom HarnessSpec input to an empty object", async () => {
+    vi.mocked(compileHarnessSpec).mockReturnValue(customCompiled as any);
+
+    const registry = createMockRegistry();
+    const commands = createLassoCommands(registry as any);
+    const runCommand = commands.find(command => command.name === "lasso:run");
+    const ctx = createCommandContext();
+
+    await runCommand?.handler(JSON.stringify(customSpec), ctx as any);
+
+    expect(registry.client.startOrchestration).toHaveBeenCalledWith("instance-123", "custom-echo", {});
+  });
+
   it("inspect command prints the spec, cir, and workflow state", async () => {
     const registry = createMockRegistry();
     const commands = createLassoCommands(registry as any);
@@ -186,6 +258,28 @@ describe("Lasso pi commands", () => {
     );
   });
 
+  it("inspect command prints a custom HarnessSpec after compiling it directly", async () => {
+    vi.mocked(compileHarnessSpec).mockReturnValue(customCompiled as any);
+
+    const registry = createMockRegistry();
+    const commands = createLassoCommands(registry as any);
+    const compileCommand = commands.find(command => command.name === "lasso:compile");
+    const inspectCommand = commands.find(command => command.name === "lasso:inspect");
+    const ctx = createCommandContext();
+
+    await compileCommand?.handler(JSON.stringify(customSpec), ctx as any);
+    await inspectCommand?.handler("custom-echo", ctx as any);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining("### Lasso Workflow `custom-echo`"),
+      "info",
+    );
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      expect.stringContaining('"name": "custom-echo"'),
+      "info",
+    );
+  });
+
   it("compile command reports malformed JSON cleanly", async () => {
     const commands = createLassoCommands(createMockRegistry() as any);
     const compileCommand = commands.find(command => command.name === "lasso:compile");
@@ -193,7 +287,10 @@ describe("Lasso pi commands", () => {
 
     await compileCommand?.handler("{not-json", ctx as any);
 
-    expect(ctx.ui.notify).toHaveBeenCalledWith("Invalid workflow request JSON", "error");
+    expect(ctx.ui.notify).toHaveBeenCalledWith(
+      "Invalid compile input. Expected workflow request JSON, HarnessSpec JSON, {spec|specPath,input?}, or an absolute spec path.",
+      "error",
+    );
   });
 
   it("compile command reports malformed patch-validation envelope cleanly", async () => {

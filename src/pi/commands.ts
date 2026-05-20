@@ -6,7 +6,9 @@ import { planWorkflowRequest } from "../planner/synthesize.js";
 import type { PlannerResult } from "../planner/types.js";
 import { parseReplanRequest, replanWorkflowRequest } from "../replanner/synthesize.js";
 import type { ReplanResult } from "../replanner/types.js";
-import { buildReferenceHarnessSpec, parseWorkflowRequest, type ReferenceWorkflowRequest } from "../reference/catalog.js";
+import type { HarnessSpec } from "../spec/types.js";
+import { parseCommandTarget, type ParsedCommandTarget } from "./command-input.js";
+import { buildReferenceHarnessSpec, type ReferenceWorkflowRequest } from "../reference/catalog.js";
 
 const compiledHarnesses = new Map<string, CompiledHarnessWorkflow>();
 let lastCompiledHarnessName: string | undefined;
@@ -15,11 +17,11 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
   const compileCommand: RegisteredCommand = {
     name: "lasso:compile",
     sourceInfo: extSourceInfo(),
-    description: "Compile a bundled Lasso reference workflow from a workflow request JSON payload.",
+    description: "Compile either a bundled Lasso workflow request or a custom HarnessSpec payload.",
     handler: async (args, ctx) => {
       try {
-        const request = parseRequestArgs(args);
-        const compiled = compileReferenceHarness(request);
+        const target = await parseCommandTarget(args, "compile");
+        const compiled = compileCommandTarget(target);
         ctx.ui.notify(
           [
             `Compiled \`${compiled.name}\``,
@@ -38,11 +40,11 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
   const runCommand: RegisteredCommand = {
     name: "lasso:run",
     sourceInfo: extSourceInfo(),
-    description: "Compile, register, and start a bundled Lasso reference workflow from a workflow request JSON payload.",
+    description: "Compile, register, and start either a bundled Lasso workflow request or a custom HarnessSpec payload.",
     handler: async (args, ctx) => {
       try {
-        const request = parseRequestArgs(args);
-        const compiled = compileReferenceHarness(request);
+        const target = await parseCommandTarget(args, "run");
+        const compiled = compileCommandTarget(target);
         compiled.register();
 
         const runtime = registry.getRuntime();
@@ -58,7 +60,7 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
         }
 
         const instanceId = randomUUID();
-        await client.startOrchestration(instanceId, compiled.name, {});
+        await client.startOrchestration(instanceId, compiled.name, target.runtimeInput);
         ctx.ui.notify(`Started \`${compiled.name}\` (${instanceId})`, "info");
       } catch (error) {
         ctx.ui.notify(formatCommandError(error), "error");
@@ -166,16 +168,24 @@ export function clearCompiledHarnesses(): void {
   lastCompiledHarnessName = undefined;
 }
 
+export function compileCommandTarget(target: ParsedCommandTarget): CompiledHarnessWorkflow {
+  if (target.kind === "reference") {
+    return compileReferenceHarness(target.request);
+  }
+
+  return compileCustomHarness(target.spec);
+}
+
 export function compileReferenceHarness(request: ReferenceWorkflowRequest): CompiledHarnessWorkflow {
   const spec = buildReferenceHarnessSpec(request);
+  return compileCustomHarness(spec);
+}
+
+function compileCustomHarness(spec: HarnessSpec): CompiledHarnessWorkflow {
   const compiled = compileHarnessSpec(spec);
   compiledHarnesses.set(compiled.name, compiled);
   lastCompiledHarnessName = compiled.name;
   return compiled;
-}
-
-function parseRequestArgs(args: string): ReferenceWorkflowRequest {
-  return parseWorkflowRequest(args);
 }
 
 function extSourceInfo(): SourceInfo {
