@@ -1,7 +1,7 @@
 # Lasso
 
 <p align="center">
-  <img src="docs/agent-wrangling.png" width="320" alt="Agent Wrangling" />
+  <img src="docs/agent-wrangling.png" width="600" alt="Agent Wrangling" />
 </p>
 
 Lasso is a dynamic harness engine built on `pi-duroxide`. It goes from intent to
@@ -21,27 +21,54 @@ Intent
 If `pi-duroxide` is the durable runtime engine, **Lasso is the layer that
 generates, optimizes, and repairs the harnesses that run on it**.
 
+## What is Lasso?
+
+Lasso is a **pi coding agent extension** — a TypeScript package that plugs into
+pi via the `pi` field in `package.json`. When installed, it:
+
+1. Boots `pi-duroxide` (the durable workflow runtime)
+2. Registers 5 slash commands (`/lasso:plan`, `/lasso:run`, etc.)
+3. Exports a library API for programmatic use
+
+There are two ways to use it:
+
+| Mode | How | When |
+| --- | --- | --- |
+| **Chat mode** | Slash commands inside pi's coding agent UI | Interactive workflow planning and execution |
+| **Library mode** | `import { compileHarnessSpec } from "lasso"` | Building custom tooling, CI pipelines, or other extensions |
+
 ## Quick start
 
-```bash
-# Run from this repository
-pi -e ./src/index.ts
+### Install
 
-# Or install into pi
+```bash
+# From this repository
 pi install .
+
+# Or from npm (once published)
+pi install @mhingston5/lasso
 ```
 
-Then, inside pi:
+### Chat mode (inside pi)
 
 ```bash
 # 1. Plan a workflow from a freeform brief
 /lasso:plan Validate that the bug fix in fix.patch works against main
 
-# 2. Run it against a disposable worktree
+# 2. Run it (paste the JSON output from step 1)
 /lasso:run {"workflow":"patch-validation","input":{...}}
 
 # 3. Inspect what happened
 /lasso:inspect
+```
+
+### Library mode (TypeScript)
+
+```typescript
+import { compileHarnessSpec, mutateHarness, classifyFailure } from "lasso";
+
+const compiled = compileHarnessSpec(spec);
+const signature = classifyFailure(error, { nodeId: "deploy" });
 ```
 
 > **Safety:** Lasso checks out refs, applies patches, and merges branches in the
@@ -50,6 +77,7 @@ Then, inside pi:
 
 ## Table of contents
 
+- [What is Lasso?](#what-is-lasso)
 - [Why Lasso exists](#why-lasso-exists)
 - [What Lasso does](#what-lasso-does)
 - [How it works](#how-it-works)
@@ -652,6 +680,15 @@ Node IDs are prefixed with stage names to avoid collisions.
 ---
 
 ## How Lasso fits with pi-duroxide
+
+Lasso is distributed as a **pi extension** (`package.json` has a `"pi"` field
+pointing to `./src/index.ts`). When you `pi install` it:
+
+1. pi loads `src/index.ts`, which exports a default extension function
+2. That function (`src/pi/extension.ts`) first boots `pi-duroxide`
+3. Then it registers the 5 slash commands with pi's `ExtensionAPI`
+
+The layering:
 
 - `pi-duroxide` owns workflow lifecycle, replay, timers, events, and runtime registration
 - Lasso owns spec validation, CIR lowering, optimization, compilation, and operator-facing commands
