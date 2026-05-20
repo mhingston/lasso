@@ -1,7 +1,7 @@
 # Lasso
 
-Lasso is a local-first workflow compiler for pi. It sits on top of
-`pi-duroxide` and gives you two things:
+Lasso is a local-first workflow compiler and operator layer for pi. It sits on
+top of `pi-duroxide` and gives you two things:
 
 1. a compiler pipeline for turning a declarative `HarnessSpec` into a replay-safe durable workflow
 2. bundled local workflows and slash commands for common repository automation tasks
@@ -11,6 +11,9 @@ Today, Lasso has two distinct operator layers:
 1. `/lasso:plan` and `/lasso:replan` focus on the bundled local workflows
 2. `/lasso:compile` and `/lasso:run` can now work with either bundled requests
    or arbitrary `HarnessSpec` workflows
+
+If `pi-duroxide` is the durable runtime engine, **Lasso is the layer that helps
+you author, package, and operate workflows on top of it**.
 
 ## Quick Start
 
@@ -43,6 +46,8 @@ Then, inside pi:
 
 ## Table of Contents
 
+- [Why Lasso exists](#why-lasso-exists)
+- [Example use cases](#example-use-cases)
 - [What Lasso does](#what-lasso-does)
 - [When to use Lasso](#when-to-use-lasso)
 - [Does it work with any workflow?](#does-it-work-with-any-workflow)
@@ -55,6 +60,38 @@ Then, inside pi:
 - [Non-goals](#non-goals)
 
 ---
+
+## Why Lasso exists
+
+`pi-duroxide` gives you a durable workflow runtime. That is the right layer when
+you already know what workflow you want to run.
+
+Lasso sits one level higher. It gives you:
+
+1. a **workflow authoring format** (`HarnessSpec`)
+2. a **compiler pipeline** that turns that format into a replay-safe workflow
+3. **bundled workflow families** for common local automation tasks
+4. a **command surface** for drafting, compiling, running, and inspecting workflows
+
+Use Lasso when you want workflow automation to be:
+
+- more reusable than an ad hoc prompt
+- more inspectable than hidden agent logic
+- safer to validate before execution
+- easier to evolve into repeatable automation
+
+## Example use cases
+
+Lasso is a good fit when you want things like:
+
+1. **Validate a candidate fix locally** — confirm a bug reproduces on a baseline, apply a branch or patch, rerun the repro, then run broader verification.
+2. **Rehearse a PR-style merge flow locally** — review a branch, run checks, route through approval, and perform a local merge without live GitHub integration.
+3. **Compile and run your own workflow** — author a custom `HarnessSpec` and execute it through `/lasso:compile` and `/lasso:run`.
+
+Longer-term, the direction is to make it easier to go from **intent -> workflow**.
+Today that is only partially implemented: planning and replanning work for the
+two bundled workflow families, while arbitrary workflows still need a manual
+`HarnessSpec`.
 
 ## What Lasso does
 
@@ -100,6 +137,14 @@ this repo?"** — yes.
 If you are asking, **"Can Lasso plan or replan arbitrary workflows from natural
 language?"** — no, not today. The planner and replanner still only understand
 the bundled workflow families.
+
+If you are asking, **"Is the long-term idea prompt/skill -> workflow?"** —
+yes, that is the broader direction. The current shipped state is a narrower,
+safer slice:
+
+1. **plan** a bundled workflow request from a freeform brief
+2. **replan** a bundled workflow request after a concrete outcome
+3. **compile/run** arbitrary workflows only when you already have a `HarnessSpec`
 
 ## Bundled workflows
 
