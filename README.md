@@ -1,6 +1,6 @@
 # Lasso
 
-Lasso is a workflow compiler layered on top of `pi-duroxide`. It validates a declarative `HarnessSpec`, lowers it to CIR, compiles it into replay-safe workflows, and exposes a thin pi adapter for plan/compile/run/inspect operations.
+Lasso is a workflow compiler layered on top of `pi-duroxide`. It validates a declarative `HarnessSpec`, lowers it to CIR, compiles it into replay-safe workflows, and exposes a thin pi adapter for plan/replan/compile/run/inspect operations.
 
 ## Standalone repository
 
@@ -37,9 +37,10 @@ The original simulated PR review + merge flow. It uses tool nodes to inspect the
 
 ## Pi adapter commands
 
-When the Lasso extension is loaded, it first boots the underlying `pi-duroxide` workflow extension and then adds four slash commands:
+When the Lasso extension is loaded, it first boots the underlying `pi-duroxide` workflow extension and then adds five slash commands:
 
 - `/lasso:plan <freeform brief>`
+- `/lasso:replan <replan request JSON>`
 - `/lasso:compile <workflow request JSON>`
 - `/lasso:run <workflow request JSON>`
 - `/lasso:inspect [workflow-name]`
@@ -80,6 +81,57 @@ For a clarification result, the command output includes:
 2. reasons the planner stopped
 3. missing fields
 4. concrete guidance for what to add to the brief
+
+### `/lasso:replan`
+
+The replanner is also deterministic and draft-only. It accepts:
+
+1. the original workflow request envelope, and
+2. a structured `observedOutcome` describing how that attempt behaved
+
+and returns one of three outcomes:
+
+1. a revised draft request JSON envelope
+2. a `needs_operator_input` result when a human must provide new facts
+3. a `stop` result when auto-retrying would be wrong
+
+V1 supports both built-in workflow families:
+
+- `patch-validation`
+- `pr-review-merge`
+
+It never guesses new branch names, candidate sources, or command lists. In v1,
+the only safe automatic mutation is escalating `patch-validation` from
+`approvalRequired: false` to `approvalRequired: true` when a previous successful
+attempt still carries explicit high-risk signals.
+
+Example replan input:
+
+```json
+{
+  "workflow": "patch-validation",
+  "originalRequest": {
+    "workflow": "patch-validation",
+    "input": {
+      "repoPath": "/absolute/path/to/disposable-worktree",
+      "baselineRef": "main",
+      "candidateSource": { "kind": "patchFile", "value": "/path/to/fix.patch" },
+      "reproduceCommands": ["npm test -- --grep 'the broken test'"],
+      "verificationCommands": ["npm test"],
+      "reviewInstructions": "Approve if the patch applies cleanly and verification passes.",
+      "approvalRequired": false
+    }
+  },
+  "observedOutcome": {
+    "terminalNodeId": "validated-fix",
+    "notes": ["prod hotfix"]
+  }
+}
+```
+
+For aborted attempts, provide `aborted: true` plus an explicit `abortReason`
+such as `setup-failure`, `retry-exhaustion`, `timeout`, `manual-stop`, or
+`unknown`.
 
 ## Workflow request envelopes
 
@@ -177,8 +229,8 @@ The MVP does **not** include:
 - live GitHub or `gh` integration
 - autonomous code authoring or patch generation (the workflow validates a fix you already have)
 - LLM-backed planner synthesis
-- automatic compile/run behavior from `/lasso:plan`
-- adaptive replanning
+- automatic compile/run behavior from `/lasso:plan` or `/lasso:replan`
+- adaptive runtime mutation of already-running workflows
 - arbitrary generated TypeScript
 
 ## Package structure
@@ -187,5 +239,6 @@ The MVP does **not** include:
 - `src/cir/` — internal execution contract and lowering
 - `src/compiler/` — replay-safe workflow compiler and runtime helpers
 - `src/planner/` — deterministic brief-to-request synthesis
+- `src/replanner/` — deterministic outcome-aware request revision
 - `src/reference/` — simulated/local PR review + merge reference workflow
 - `src/pi/` — thin pi adapter surface

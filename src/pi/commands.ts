@@ -4,6 +4,8 @@ import { type WorkflowRegistry } from "pi-duroxide";
 import { compileHarnessSpec, type CompiledHarnessWorkflow } from "../compiler/compile.js";
 import { planWorkflowRequest } from "../planner/synthesize.js";
 import type { PlannerResult } from "../planner/types.js";
+import { parseReplanRequest, replanWorkflowRequest } from "../replanner/synthesize.js";
+import type { ReplanResult } from "../replanner/types.js";
 import { buildReferenceHarnessSpec, parseWorkflowRequest, type ReferenceWorkflowRequest } from "../reference/catalog.js";
 
 const compiledHarnesses = new Map<string, CompiledHarnessWorkflow>();
@@ -136,7 +138,27 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
     },
   };
 
-  return [compileCommand, runCommand, inspectCommand, planCommand];
+  const replanCommand: RegisteredCommand = {
+    name: "lasso:replan",
+    sourceInfo: extSourceInfo(),
+    description: "Draft a revised workflow request from a prior request plus explicit outcome signals without compiling or running it.",
+    handler: async (args, ctx) => {
+      try {
+        if (!args.trim()) {
+          ctx.ui.notify("Usage: /lasso:replan <replan request JSON>", "error");
+          return;
+        }
+
+        const request = parseReplanRequest(args);
+        const result = replanWorkflowRequest(request);
+        ctx.ui.notify(renderReplannerResult(result), "info");
+      } catch (error) {
+        ctx.ui.notify(formatCommandError(error), "error");
+      }
+    },
+  };
+
+  return [compileCommand, runCommand, inspectCommand, planCommand, replanCommand];
 }
 
 export function clearCompiledHarnesses(): void {
@@ -209,4 +231,73 @@ function renderPlannerResult(result: PlannerResult): string {
   lines.push("", "#### Guidance", ...result.guidance.map(item => `- ${item}`));
 
   return lines.join("\n");
+}
+
+function renderReplannerResult(result: ReplanResult): string {
+  if (result.status === "draft_request") {
+    const lines = [
+      `### Replan Draft \`${result.workflow}\``,
+      "",
+      `- Trigger: \`${result.trigger}\``,
+      `- Risk level: \`${result.riskLevel}\``,
+      "",
+      "#### Rationale",
+      ...result.rationale.map(item => `- ${item}`),
+    ];
+
+    if (result.warnings.length > 0) {
+      lines.push("", "#### Warnings", ...result.warnings.map(item => `- ${item}`));
+    }
+
+    if (result.changes.length > 0) {
+      lines.push("", "#### Changes", ...result.changes.map(item => `- ${item}`));
+    }
+
+    lines.push(
+      "",
+      "#### Request JSON",
+      "```json",
+      JSON.stringify(result.request, null, 2),
+      "```",
+      "",
+      "Next: pass this JSON into `/lasso:compile` or `/lasso:run` when you are ready.",
+    );
+
+    return lines.join("\n");
+  }
+
+  if (result.status === "needs_operator_input") {
+    const lines = ["### Replan Needs Operator Input"];
+
+    if (result.candidateWorkflow) {
+      lines.push("", `Likely workflow: \`${result.candidateWorkflow}\``);
+    }
+
+    lines.push(
+      `Risk level: \`${result.riskLevel}\``,
+      "",
+      "#### Reasons",
+      ...result.reasons.map(item => `- ${item}`),
+    );
+
+    if (result.missingFields.length > 0) {
+      lines.push("", "#### Missing Fields", ...result.missingFields.map(item => `- ${item}`));
+    }
+
+    lines.push("", "#### Guidance", ...result.guidance.map(item => `- ${item}`));
+    return lines.join("\n");
+  }
+
+  return [
+    "### Replan Stop",
+    "",
+    `Workflow: \`${result.workflow}\``,
+    `Risk level: \`${result.riskLevel}\``,
+    "",
+    "#### Reasons",
+    ...result.reasons.map(item => `- ${item}`),
+    "",
+    "#### Guidance",
+    ...result.guidance.map(item => `- ${item}`),
+  ].join("\n");
 }

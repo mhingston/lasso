@@ -20,8 +20,14 @@ vi.mock("../../src/planner/synthesize.js", () => ({
   planWorkflowRequest: vi.fn(),
 }));
 
+vi.mock("../../src/replanner/synthesize.js", () => ({
+  parseReplanRequest: vi.fn(),
+  replanWorkflowRequest: vi.fn(),
+}));
+
 import { compileHarnessSpec } from "../../src/compiler/compile.js";
 import { planWorkflowRequest } from "../../src/planner/synthesize.js";
+import { parseReplanRequest, replanWorkflowRequest } from "../../src/replanner/synthesize.js";
 import { buildReferenceHarnessSpec } from "../../src/reference/catalog.js";
 import { createLassoCommands, clearCompiledHarnesses } from "../../src/pi/commands.js";
 
@@ -44,6 +50,15 @@ describe("Lasso pi commands", () => {
       verificationCommands: ["npm test"],
       reviewInstructions: "Approve only if the bug reproduces on baseline and all checks pass on the candidate.",
       approvalRequired: true,
+    },
+  };
+
+  const replanInput = {
+    workflow: "patch-validation" as const,
+    originalRequest: patchRequest,
+    observedOutcome: {
+      terminalNodeId: "validated-fix" as const,
+      notes: ["prod hotfix"],
     },
   };
 
@@ -71,13 +86,15 @@ describe("Lasso pi commands", () => {
     vi.mocked(buildReferenceHarnessSpec).mockReset();
     vi.mocked(compileHarnessSpec).mockReset();
     vi.mocked(planWorkflowRequest).mockReset();
+    vi.mocked(parseReplanRequest).mockReset();
+    vi.mocked(replanWorkflowRequest).mockReset();
     vi.mocked(buildReferenceHarnessSpec).mockReturnValue(prSpec as any);
     vi.mocked(compileHarnessSpec).mockReturnValue(prCompiled as any);
     prCompiled.register.mockReset();
     patchCompiled.register.mockReset();
   });
 
-  it("creates compile, run, inspect, and plan commands", () => {
+  it("creates compile, run, inspect, plan, and replan commands", () => {
     const commands = createLassoCommands(createMockRegistry() as any);
 
     expect(commands.map(command => command.name)).toEqual([
@@ -85,6 +102,7 @@ describe("Lasso pi commands", () => {
       "lasso:run",
       "lasso:inspect",
       "lasso:plan",
+      "lasso:replan",
     ]);
   });
 
@@ -271,6 +289,126 @@ describe("Lasso pi commands", () => {
     await planCommand?.handler("Review and merge this branch", ctx as any);
 
     expect(ctx.ui.notify).toHaveBeenCalledWith("Internal planner error", "error");
+  });
+
+  it("replan command renders a revised draft request without compiling or running anything", async () => {
+    vi.mocked(parseReplanRequest).mockReturnValue(replanInput);
+    vi.mocked(replanWorkflowRequest).mockReturnValue({
+      status: "draft_request",
+      workflow: "patch-validation",
+      request: {
+        workflow: "patch-validation",
+        input: {
+          ...patchRequest.input,
+          approvalRequired: true,
+        },
+      },
+      trigger: "risk-escalation",
+      riskLevel: "high",
+      rationale: ["Patch-file candidates are treated as high risk for adaptive replanning."],
+      warnings: [],
+      changes: ["approvalRequired: false -> true"],
+    });
+
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const replanCommand = commands.find(command => command.name === "lasso:replan");
+    const ctx = createCommandContext();
+    const requestJson = JSON.stringify(replanInput);
+
+    await replanCommand?.handler(requestJson, ctx as any);
+
+    expect(parseReplanRequest).toHaveBeenCalledWith(requestJson);
+    expect(replanWorkflowRequest).toHaveBeenCalledWith(replanInput);
+    expect(buildReferenceHarnessSpec).not.toHaveBeenCalled();
+    expect(compileHarnessSpec).not.toHaveBeenCalled();
+
+    const [message, level] = ctx.ui.notify.mock.calls[0];
+    expect(level).toBe("info");
+    expect(message).toContain("### Replan Draft `patch-validation`");
+    expect(message).toContain("Trigger: `risk-escalation`");
+    expect(message).toContain("Risk level: `high`");
+    expect(message).toContain("#### Changes");
+    expect(message).toContain("approvalRequired: false -> true");
+    expect(message).toContain("```json");
+    expect(message).toContain('"workflow": "patch-validation"');
+    expect(message).toContain("/lasso:compile");
+    expect(message).toContain("/lasso:run");
+  });
+
+  it("replan command renders operator-input guidance without emitting partial JSON", async () => {
+    vi.mocked(parseReplanRequest).mockReturnValue(replanInput);
+    vi.mocked(replanWorkflowRequest).mockReturnValue({
+      status: "needs_operator_input",
+      candidateWorkflow: "pr-review-merge",
+      riskLevel: "medium",
+      reasons: ["Verification failed before merge."],
+      missingFields: ["sourceBranch", "verificationCommands"],
+      guidance: ["Update the branch", "Review the verification commands"],
+    });
+
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const replanCommand = commands.find(command => command.name === "lasso:replan");
+    const ctx = createCommandContext();
+
+    await replanCommand?.handler(JSON.stringify(replanInput), ctx as any);
+
+    const [message, level] = ctx.ui.notify.mock.calls[0];
+    expect(level).toBe("info");
+    expect(message).toContain("### Replan Needs Operator Input");
+    expect(message).toContain("Likely workflow: `pr-review-merge`");
+    expect(message).toContain("Risk level: `medium`");
+    expect(message).toContain("#### Missing Fields");
+    expect(message).not.toContain("```json");
+  });
+
+  it("replan command renders stop output without emitting partial JSON", async () => {
+    vi.mocked(parseReplanRequest).mockReturnValue(replanInput);
+    vi.mocked(replanWorkflowRequest).mockReturnValue({
+      status: "stop",
+      workflow: "patch-validation",
+      riskLevel: "high",
+      reasons: ["The previous attempt was rejected by a human reviewer."],
+      guidance: ["Review the candidate manually before retrying."],
+    });
+
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const replanCommand = commands.find(command => command.name === "lasso:replan");
+    const ctx = createCommandContext();
+
+    await replanCommand?.handler(JSON.stringify(replanInput), ctx as any);
+
+    const [message, level] = ctx.ui.notify.mock.calls[0];
+    expect(level).toBe("info");
+    expect(message).toContain("### Replan Stop");
+    expect(message).toContain("Workflow: `patch-validation`");
+    expect(message).toContain("Risk level: `high`");
+    expect(message).not.toContain("```json");
+  });
+
+  it("replan command reports usage for an empty request", async () => {
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const replanCommand = commands.find(command => command.name === "lasso:replan");
+    const ctx = createCommandContext();
+
+    await replanCommand?.handler("   ", ctx as any);
+
+    expect(parseReplanRequest).not.toHaveBeenCalled();
+    expect(replanWorkflowRequest).not.toHaveBeenCalled();
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Usage: /lasso:replan <replan request JSON>", "error");
+  });
+
+  it("replan command reports malformed replan JSON cleanly", async () => {
+    vi.mocked(parseReplanRequest).mockImplementation(() => {
+      throw new Error("Invalid replan request JSON");
+    });
+
+    const commands = createLassoCommands(createMockRegistry() as any);
+    const replanCommand = commands.find(command => command.name === "lasso:replan");
+    const ctx = createCommandContext();
+
+    await replanCommand?.handler("{not-json", ctx as any);
+
+    expect(ctx.ui.notify).toHaveBeenCalledWith("Invalid replan request JSON", "error");
   });
 });
 
