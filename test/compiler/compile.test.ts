@@ -323,6 +323,37 @@ describe("compileHarnessSpec", () => {
       /Unsupported merge execution shape for merge node join/,
     );
   });
+
+  it("preserves trace and adds harnessState to result", () => {
+    const compiled = compileHarnessSpec(createToolSpec());
+    const mock = createMockContext();
+    const iterator = compiled.workflows[0].generator(mock.context as any, { testInput: 42 });
+
+    iterator.next();
+    const completed = iterator.next({ stdout: "diff output" });
+
+    expect(completed.done).toBe(true);
+    expect(completed.value).toMatchObject({
+      status: "completed",
+      terminalNodeId: "run-diff",
+      outputs: {
+        "run-diff": { stdout: "diff output" }
+      },
+      trace: expect.arrayContaining([
+        expect.objectContaining({
+          nodeId: "run-diff",
+          phase: "enter"
+        })
+      ])
+    });
+    
+    expect(completed.value.harnessState).toBeDefined();
+    expect(completed.value.harnessState.inputs).toEqual({ testInput: 42 });
+    expect(completed.value.harnessState.outputs).toEqual({ "run-diff": { stdout: "diff output" } });
+    expect(completed.value.harnessState.nodeResults).toEqual({ "run-diff": { stdout: "diff output" } });
+    expect(completed.value.harnessState.failures).toEqual([]);
+    expect(completed.value.harnessState.metrics).toEqual({ retries: 0, durationMs: expect.any(Number) });
+  });
 });
 
 function createToolSpec(): HarnessSpec {

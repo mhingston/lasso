@@ -1,5 +1,6 @@
 import type { CirFailureRoutingHint, CirNode, CirVerificationHook } from "../cir/types.js";
 import type { WorkflowContext, YieldItem } from "pi-duroxide";
+import type { HarnessState } from "../state/types.js";
 
 export type TracePhase =
   | "enter"
@@ -23,6 +24,8 @@ export interface ExecutionState {
   input: unknown;
   outputs: Record<string, unknown>;
   trace: ExecutionTraceEntry[];
+  harnessState: HarnessState;
+  startTimeMs: number;
 }
 
 export interface FailureClassificationResult {

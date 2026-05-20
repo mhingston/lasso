@@ -5,6 +5,8 @@ import { lowerHarnessSpecToCir } from "../cir/lower.js";
 import { validateCirWorkflow } from "../cir/validate.js";
 import type { HarnessSpec } from "../spec/types.js";
 import { validateHarnessSpec } from "../spec/validate.js";
+import { createHarnessState, recordNodeResult, updateMetrics } from "../state/snapshots.js";
+import type { HarnessState } from "../state/types.js";
 import {
   buildShellCommand,
   evaluateConditionExpression,
@@ -22,6 +24,7 @@ export interface CompiledHarnessResult {
   result: unknown;
   outputs: Record<string, unknown>;
   trace: ExecutionTraceEntry[];
+  harnessState: HarnessState;
 }
 
 export interface CompiledHarnessWorkflow {
@@ -92,10 +95,14 @@ function createWorkflowGenerator(
     ctx: WorkflowContext,
     input: unknown,
   ): Generator<YieldItem, CompiledHarnessResult, unknown> {
+    const startTimeMs = Date.now();
+    const harnessState = createHarnessState(input);
     const state: ExecutionState = {
       input,
       outputs: {},
       trace: [],
+      harnessState,
+      startTimeMs,
     };
     let currentNodeId = cir.entryNodeId;
 
@@ -496,12 +503,24 @@ function buildMergeOutput(node: CirMergeNode, outputs: Record<string, unknown>):
 }
 
 function buildCompletedResult(state: ExecutionState, terminalNodeId: string): CompiledHarnessResult {
+  const endTimeMs = Date.now();
+  const durationMs = endTimeMs - state.startTimeMs;
+  
+  updateMetrics(state.harnessState, { durationMs });
+  
+  state.harnessState.outputs = { ...state.outputs };
+  
+  for (const [nodeId, output] of Object.entries(state.outputs)) {
+    recordNodeResult(state.harnessState, nodeId, output);
+  }
+  
   return {
     status: "completed",
     terminalNodeId,
     result: structuredClone(state.outputs[terminalNodeId]),
     outputs: structuredClone(state.outputs),
     trace: structuredClone(state.trace),
+    harnessState: state.harnessState,
   };
 }
 

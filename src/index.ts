@@ -11,6 +11,8 @@ export type {
   ReplanWorkflow,
   RiskLevel,
 } from "./replanner/types.js";
+export type { FailureRecord } from "./failures/types.js";
+export type { HarnessState } from "./state/types.js";
 export { validateHarnessSpec } from "./spec/validate.js";
 export { lowerHarnessSpecToCir } from "./cir/lower.js";
 export { compileHarnessSpec } from "./compiler/compile.js";
@@ -18,4 +20,7 @@ export { planWorkflowRequest } from "./planner/synthesize.js";
 export { parseReplanRequest, replanWorkflowRequest } from "./replanner/synthesize.js";
 export { buildPrReviewMergeHarnessSpec } from "./reference/pr-review-merge.js";
 export { createLassoCommands, clearCompiledHarnesses } from "./pi/commands.js";
+export { classifyFailureRecord, isRetryableFailure } from "./failures/ontology.js";
+export { mapReferenceFailure } from "./failures/map-reference-failures.js";
+export { createHarnessState, addFailure, recordNodeResult, updateMetrics, captureSnapshot } from "./state/snapshots.js";
 export { default } from "./pi/extension.js";
