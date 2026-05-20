@@ -51,6 +51,10 @@ Then, inside pi:
 - [What Lasso does](#what-lasso-does)
 - [Adaptive runtime](#adaptive-runtime)
 - [Lineage persistence](#lineage-persistence)
+- [Verification engine](#verification-engine)
+- [Compiler optimizations](#compiler-optimizations)
+- [Harness mutations](#harness-mutations)
+- [Capabilities](#capabilities)
 - [When to use Lasso](#when-to-use-lasso)
 - [Does it work with any workflow?](#does-it-work-with-any-workflow)
 - [Bundled workflows](#bundled-workflows)
@@ -225,6 +229,113 @@ const recent = await store.queryLineage({
 The store writes JSON files to `{storeDir}/versions/` and `{storeDir}/lineage/`.
 The `LineageStore` interface can be implemented for other backends (SQLite,
 remote API, etc.).
+
+## Verification engine
+
+Lasso has a standalone verification engine (`src/verification/engine.ts`) that
+runs verification hooks with compositional strategies.
+
+### Strategies
+
+| Strategy | Behavior |
+| --- | --- |
+| `all-must-pass` (default) | All hooks must pass; first block stops execution |
+| `first-pass` | First passing hook wins |
+| `any-block` | Any block stops immediately |
+
+Set the strategy on `VerificationPolicy` in your `HarnessSpec`:
+
+```json
+{
+  "verificationPolicy": {
+    "strategy": "first-pass",
+    "rules": [
+      { "kind": "tool", "checkNodeId": "run-tests", "onFail": "retry", "maxAttempts": 2 }
+    ]
+  }
+}
+```
+
+The engine produces a `VerificationReport` with per-hook outcomes and duration
+tracking. Verification hooks are executed during workflow compilation and their
+results are captured in the execution trace.
+
+## Compiler optimizations
+
+The CIR compiler runs three optimization passes between lowering and validation:
+
+1. **Dead-node elimination** — removes nodes unreachable from the entry point
+2. **Single-branch merge elision** — removes merge nodes that wait for only one branch
+3. **Tool-node fusion** — merges adjacent `bash`/`sh` nodes into a single command
+
+Optimization passes are tracked in `CompiledHarnessWorkflow.optimizations`.
+The optimization module is at `src/cir/optimize.ts`.
+
+## Harness mutations
+
+The mutation engine (`src/mutation/`) can structurally modify a `HarnessSpec`
+based on execution trace analysis.
+
+### Mutation types
+
+| Type | Effect |
+| --- | --- |
+| `add-node` | Insert a new node with specified kind and properties |
+| `remove-node` | Remove a node and redirect its edges |
+| `modify-node` | Change a node's properties (tool, args, prompt) |
+| `add-edge` | Add a transition between two nodes |
+| `toggle-approval` | Flip `approvalRequired` in the human policy |
+| `add-verification` | Add a verification hook to a node |
+
+### Deriving mutations from traces
+
+`deriveMutationsFromTrace()` analyzes execution failures and suggests structural
+mutations. For example, repeated failures at a node may trigger an
+`add-verification` mutation, or a transient failure may suggest `add-node` for
+a retry step.
+
+The adaptive replanner integrates this: after execution, it derives mutations,
+applies them to the spec, and stores the structural diff in version metadata.
+
+## Capabilities
+
+The capability system enables dynamic graph generation from required tools and
+services, rather than hardcoded templates.
+
+### Capability types
+
+Each capability declares prerequisites, risks, and verification steps:
+
+```typescript
+interface Capability {
+  id: string;
+  kind: "tool" | "llm" | "service" | "human";
+  name: string;
+  prerequisites: string[];
+  risks: string[];
+  verification: string[];
+}
+```
+
+### Default capabilities
+
+Lasso pre-registers: `bash`, `git`, `node`, `llm-review`, `human-approval`.
+
+### Usage
+
+Pass a `CapabilityRegistry` to `planWorkflowRequest()` to enable
+capability-driven synthesis:
+
+```typescript
+import { DefaultCapabilityRegistry, planWorkflowRequest } from "lasso";
+
+const registry = new DefaultCapabilityRegistry();
+const result = planWorkflowRequest(brief, registry);
+```
+
+When capabilities are specified in the intent, the graph builder constructs
+stages from capability verification steps and risk declarations instead of
+using hardcoded templates.
 
 ## When to use Lasso
 
