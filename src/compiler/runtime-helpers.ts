@@ -1,5 +1,6 @@
 import type { CirFailureRoutingHint, CirNode, CirVerificationHook } from "../cir/types.js";
 import type { WorkflowContext, YieldItem } from "pi-duroxide";
+import { addFailure, updateMetrics } from "../state/snapshots.js";
 import type { HarnessState } from "../state/types.js";
 
 export type TracePhase =
@@ -225,16 +226,32 @@ export function* runWithRetry<T>(
       return yield* executeAttempt();
     } catch (error) {
       const classification = classifyFailure(error, node.failureRouting);
+      const errorMessage = getErrorMessage(error);
+      
       recordTrace(ctx, state, node, "failure", {
         attemptNumber,
         category: classification.category,
-        message: getErrorMessage(error),
+        message: errorMessage,
         ...(classification.matchedPattern ? { matchedPattern: classification.matchedPattern } : {}),
+      });
+
+      // Record normalized failure to harnessState
+      const rootCause = mapClassificationToRootCause(classification, errorMessage);
+      addFailure(state.harnessState, {
+        domainType: "lasso",
+        rootCause,
+        nodeId: node.id,
+        message: errorMessage,
       });
 
       if (!node.retry || attemptNumber >= maxAttempts || !shouldRetryFailure(node.retry, classification)) {
         throw error;
       }
+
+      // Increment retry counter
+      updateMetrics(state.harnessState, { 
+        retries: state.harnessState.metrics.retries + 1,
+      });
 
       const delayMs = computeRetryDelayMs(node.retry, attemptNumber);
       recordTrace(ctx, state, node, "retry", {
@@ -247,6 +264,33 @@ export function* runWithRetry<T>(
       attemptNumber += 1;
     }
   }
+}
+
+function mapClassificationToRootCause(
+  classification: FailureClassificationResult,
+  message: string,
+): import("../failures/types.js").FailureRecord["rootCause"] {
+  // Map CIR failure classification to normalized root causes
+  if (classification.category === "transient") {
+    if (message.toLowerCase().includes("timeout")) {
+      return "tool_timeout";
+    }
+    if (message.toLowerCase().includes("rate limit")) {
+      return "rate_limited";
+    }
+    return "unknown";
+  }
+  
+  if (classification.category === "resource") {
+    return "rate_limited";
+  }
+  
+  // Permanent failures
+  if (message.toLowerCase().includes("auth") || message.toLowerCase().includes("unauthorized")) {
+    return "auth_required";
+  }
+  
+  return "dependency_failure";
 }
 
 function resolveConditionValue(path: string, state: ExecutionState): unknown {

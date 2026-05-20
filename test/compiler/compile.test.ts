@@ -354,6 +354,96 @@ describe("compileHarnessSpec", () => {
     expect(completed.value.harnessState.failures).toEqual([]);
     expect(completed.value.harnessState.metrics).toEqual({ retries: 0, durationMs: expect.any(Number) });
   });
+
+  it("records failures in harnessState when retry occurs", () => {
+    const compiled = compileHarnessSpec(createRetrySpec());
+    const mock = createMockContext();
+    const iterator = compiled.workflows[0].generator(mock.context as any, {});
+
+    // First attempt
+    const firstAttempt = iterator.next();
+    expect(firstAttempt.value).toMatchObject({
+      kind: "tool-call",
+      name: "bash",
+    });
+    
+    const errorMessage = "timeout while running verification";
+    
+    // Throw error to trigger retry
+    const afterError = iterator.throw?.(new Error(errorMessage));
+    
+    // Should get timer for backoff
+    expect(afterError?.value).toEqual({
+      kind: "timer",
+      delayMs: 2000
+    });
+
+    // After timer, second attempt
+    const secondAttempt = iterator.next();
+    expect(secondAttempt.value).toMatchObject({
+      kind: "tool-call",
+      name: "bash",
+    });
+
+    // Complete successfully on second attempt
+    const completed = iterator.next({ passed: true });
+    expect(completed.done).toBe(true);
+    
+    // Check that failure was recorded
+    expect(completed.value.harnessState.failures).toHaveLength(1);
+    expect(completed.value.harnessState.failures[0]).toMatchObject({
+      domainType: "lasso",
+      rootCause: "tool_timeout",
+      nodeId: "verify",
+      message: errorMessage,
+    });
+    
+    // Check that retry was counted
+    expect(completed.value.harnessState.metrics.retries).toBe(1);
+  });
+
+  it("accumulates multiple failures in harnessState during retries", () => {
+    const compiled = compileHarnessSpec(createRetrySpec());
+    const mock = createMockContext();
+    const iterator = compiled.workflows[0].generator(mock.context as any, {});
+
+    // First attempt
+    iterator.next();
+    
+    // First failure
+    const afterFirstError = iterator.throw?.(new Error("timeout while running verification"));
+    expect(afterFirstError?.value).toEqual({ kind: "timer", delayMs: 2000 });
+    
+    // Second attempt after timer
+    const secondAttempt = iterator.next();
+    expect(secondAttempt.value).toMatchObject({ kind: "tool-call" });
+    
+    // Second failure - should exhaust retries and throw
+    expect(() => iterator.throw?.(new Error("timeout while running verification"))).toThrow();
+  });
+
+  it("increments retry metric in harnessState for each retry attempt", () => {
+    const compiled = compileHarnessSpec(createRetrySpec());
+    const mock = createMockContext();
+    const iterator = compiled.workflows[0].generator(mock.context as any, {});
+
+    iterator.next();
+    const afterError = iterator.throw?.(new Error("timeout while running verification"));
+    
+    expect(afterError?.value).toEqual({ kind: "timer", delayMs: 2000 });
+
+    const secondAttempt = iterator.next();
+    expect(secondAttempt.value).toMatchObject({
+      kind: "tool-call",
+      name: "bash",
+    });
+
+    const completed = iterator.next({ passed: true });
+    
+    // Verify retry metric was incremented
+    expect(completed.value.harnessState.metrics.retries).toBe(1);
+    expect(mock.calls.timers).toEqual([2000]);
+  });
 });
 
 function createToolSpec(): HarnessSpec {

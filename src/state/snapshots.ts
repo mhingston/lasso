@@ -37,11 +37,5 @@ export function updateMetrics(
 }
 
 export function captureSnapshot(state: HarnessState): HarnessState {
-  return {
-    inputs: { ...state.inputs },
-    outputs: { ...state.outputs },
-    nodeResults: { ...state.nodeResults },
-    failures: [...state.failures],
-    metrics: { ...state.metrics },
-  };
+  return structuredClone(state);
 }

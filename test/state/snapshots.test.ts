@@ -192,5 +192,56 @@ describe("State snapshots", () => {
       expect(state.nodeResults["node-2"]).toEqual({ value: 2 });
       expect(state.failures).toHaveLength(1);
     });
+
+    it("should deeply clone nested objects in inputs", () => {
+      const nestedInput = { config: { debug: true, retries: 3 } };
+      const state = createHarnessState(nestedInput);
+      const snapshot = captureSnapshot(state);
+
+      (state.inputs.config as any).debug = false;
+      (state.inputs.config as any).retries = 999;
+
+      expect(snapshot.inputs.config).toEqual({ debug: true, retries: 3 });
+      expect(state.inputs.config).toEqual({ debug: false, retries: 999 });
+    });
+
+    it("should deeply clone nested objects in outputs", () => {
+      const state = createHarnessState({});
+      state.outputs["node-1"] = { result: { status: "ok", data: [1, 2, 3] } };
+      const snapshot = captureSnapshot(state);
+
+      (state.outputs["node-1"] as any).result.status = "failed";
+      (state.outputs["node-1"] as any).result.data.push(4);
+
+      expect(snapshot.outputs["node-1"]).toEqual({ result: { status: "ok", data: [1, 2, 3] } });
+      expect(state.outputs["node-1"]).toEqual({ result: { status: "failed", data: [1, 2, 3, 4] } });
+    });
+
+    it("should deeply clone nested objects in nodeResults", () => {
+      const state = createHarnessState({});
+      recordNodeResult(state, "compute", { matrix: [[1, 2], [3, 4]] });
+      const snapshot = captureSnapshot(state);
+
+      ((state.nodeResults["compute"] as any).matrix[0] as number[]).push(999);
+
+      expect(snapshot.nodeResults["compute"]).toEqual({ matrix: [[1, 2], [3, 4]] });
+      expect(state.nodeResults["compute"]).toEqual({ matrix: [[1, 2, 999], [3, 4]] });
+    });
+
+    it("should deeply clone failure records", () => {
+      const state = createHarnessState({});
+      addFailure(state, {
+        domainType: "test",
+        rootCause: "unknown",
+        message: "Error",
+        nodeId: "node-1",
+      });
+      const snapshot = captureSnapshot(state);
+
+      state.failures[0]!.message = "Modified message";
+
+      expect(snapshot.failures[0]?.message).toBe("Error");
+      expect(state.failures[0]?.message).toBe("Modified message");
+    });
   });
 });
