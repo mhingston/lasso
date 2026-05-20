@@ -53,6 +53,7 @@ function createCanonicalHarnessSpec(): HarnessSpec {
           verificationPolicy: {
             rules: [
               {
+                kind: "llm",
                 checkNodeId: "post-verify-check",
                 onFail: "retry",
                 maxAttempts: 2

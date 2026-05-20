@@ -759,4 +759,298 @@ describe("validateHarnessSpec", () => {
       expect(result.errors.some(e => e.includes("waitFor") || e.includes("minItems"))).toBe(true);
     }
   });
+
+  describe("verification rule kind validation", () => {
+    it("accepts tool verification rule pointing to tool node", () => {
+      const spec: HarnessSpec = {
+        name: "test-workflow",
+        graph: {
+          entryNodeId: "action",
+          nodes: [
+            {
+              id: "action",
+              kind: "tool",
+              tool: "echo",
+              args: ["test"],
+              verificationPolicy: {
+                rules: [
+                  {
+                    kind: "tool",
+                    checkNodeId: "verifier",
+                    onFail: "block",
+                  },
+                ],
+              },
+            },
+            {
+              id: "verifier",
+              kind: "tool",
+              tool: "test",
+              args: ["-f", "output.txt"],
+            },
+          ],
+          edges: [],
+        },
+      };
+
+      const result = validateHarnessSpec(spec);
+      expect(result.valid).toBe(true);
+    });
+
+    it("accepts llm verification rule pointing to llm node", () => {
+      const spec: HarnessSpec = {
+        name: "test-workflow",
+        graph: {
+          entryNodeId: "action",
+          nodes: [
+            {
+              id: "action",
+              kind: "tool",
+              tool: "echo",
+              args: ["test"],
+              verificationPolicy: {
+                rules: [
+                  {
+                    kind: "llm",
+                    checkNodeId: "verifier",
+                    onFail: "warn",
+                  },
+                ],
+              },
+            },
+            {
+              id: "verifier",
+              kind: "llm",
+              provider: "openai",
+              model: "gpt-4",
+              prompt: "Verify the output",
+            },
+          ],
+          edges: [],
+        },
+      };
+
+      const result = validateHarnessSpec(spec);
+      expect(result.valid).toBe(true);
+    });
+
+    it("accepts expression verification rule pointing to condition node", () => {
+      const spec: HarnessSpec = {
+        name: "test-workflow",
+        graph: {
+          entryNodeId: "action",
+          nodes: [
+            {
+              id: "action",
+              kind: "tool",
+              tool: "echo",
+              args: ["test"],
+              verificationPolicy: {
+                rules: [
+                  {
+                    kind: "expression",
+                    checkNodeId: "check-expr",
+                    onFail: "retry",
+                    maxAttempts: 3,
+                  },
+                ],
+              },
+            },
+            {
+              id: "check-expr",
+              kind: "condition",
+              condition: "outputs.action.exitCode === 0",
+              thenNodeId: "success",
+              elseNodeId: "failure",
+            },
+            {
+              id: "success",
+              kind: "tool",
+              tool: "echo",
+              args: ["success"],
+            },
+            {
+              id: "failure",
+              kind: "tool",
+              tool: "echo",
+              args: ["failure"],
+            },
+          ],
+          edges: [],
+        },
+      };
+
+      const result = validateHarnessSpec(spec);
+      expect(result.valid).toBe(true);
+    });
+
+    it("rejects verification rule with missing kind", () => {
+      const spec = {
+        name: "test-workflow",
+        graph: {
+          entryNodeId: "action",
+          nodes: [
+            {
+              id: "action",
+              kind: "tool",
+              tool: "echo",
+              args: ["test"],
+              verificationPolicy: {
+                rules: [
+                  {
+                    // missing kind
+                    checkNodeId: "verifier",
+                    onFail: "block",
+                  },
+                ],
+              },
+            },
+            {
+              id: "verifier",
+              kind: "tool",
+              tool: "test",
+              args: ["-f", "output.txt"],
+            },
+          ],
+          edges: [],
+        },
+      } as any;
+
+      const result = validateHarnessSpec(spec);
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(result.errors.some((e) => e.includes("kind") && e.includes("verification"))).toBe(true);
+      }
+    });
+
+    it("rejects tool verification rule pointing to llm node", () => {
+      const spec: HarnessSpec = {
+        name: "test-workflow",
+        graph: {
+          entryNodeId: "action",
+          nodes: [
+            {
+              id: "action",
+              kind: "tool",
+              tool: "echo",
+              args: ["test"],
+              verificationPolicy: {
+                rules: [
+                  {
+                    kind: "tool",
+                    checkNodeId: "verifier",
+                    onFail: "block",
+                  },
+                ],
+              },
+            },
+            {
+              id: "verifier",
+              kind: "llm",
+              provider: "openai",
+              model: "gpt-4",
+              prompt: "Check",
+            },
+          ],
+          edges: [],
+        },
+      };
+
+      const result = validateHarnessSpec(spec);
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(
+          result.errors.some(
+            (e) => e.includes("verifier") && e.includes("kind") && e.includes("tool")
+          )
+        ).toBe(true);
+      }
+    });
+
+    it("rejects llm verification rule pointing to tool node", () => {
+      const spec: HarnessSpec = {
+        name: "test-workflow",
+        graph: {
+          entryNodeId: "action",
+          nodes: [
+            {
+              id: "action",
+              kind: "tool",
+              tool: "echo",
+              args: ["test"],
+              verificationPolicy: {
+                rules: [
+                  {
+                    kind: "llm",
+                    checkNodeId: "verifier",
+                    onFail: "block",
+                  },
+                ],
+              },
+            },
+            {
+              id: "verifier",
+              kind: "tool",
+              tool: "test",
+              args: ["-f", "output.txt"],
+            },
+          ],
+          edges: [],
+        },
+      };
+
+      const result = validateHarnessSpec(spec);
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(
+          result.errors.some(
+            (e) => e.includes("verifier") && e.includes("kind") && e.includes("llm")
+          )
+        ).toBe(true);
+      }
+    });
+
+    it("rejects expression verification rule pointing to tool node", () => {
+      const spec: HarnessSpec = {
+        name: "test-workflow",
+        graph: {
+          entryNodeId: "action",
+          nodes: [
+            {
+              id: "action",
+              kind: "tool",
+              tool: "echo",
+              args: ["test"],
+              verificationPolicy: {
+                rules: [
+                  {
+                    kind: "expression",
+                    checkNodeId: "verifier",
+                    onFail: "block",
+                  },
+                ],
+              },
+            },
+            {
+              id: "verifier",
+              kind: "tool",
+              tool: "test",
+              args: ["-f", "output.txt"],
+            },
+          ],
+          edges: [],
+        },
+      };
+
+      const result = validateHarnessSpec(spec);
+      expect(result.valid).toBe(false);
+      if (!result.valid) {
+        expect(
+          result.errors.some(
+            (e) => e.includes("verifier") && e.includes("kind") && e.includes("expression") && e.includes("condition")
+          )
+        ).toBe(true);
+      }
+    });
+  });
 });

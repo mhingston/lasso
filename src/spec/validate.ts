@@ -98,6 +98,34 @@ export function validateHarnessSpec(spec: HarnessSpec): ValidationResult {
 
     // Issue 1: Proper reachability validation using BFS from entryNodeId
     const reachableNodes = new Set<string>();
+    const verificationNodes = new Set<string>();
+    
+    // Collect all nodes referenced by verification rules
+    for (const node of spec.graph.nodes) {
+      const nodeAny = node as any;
+      if (nodeAny.verificationPolicy?.rules) {
+        for (const rule of nodeAny.verificationPolicy.rules) {
+          if (rule.checkNodeId) {
+            verificationNodes.add(rule.checkNodeId);
+          }
+        }
+      }
+    }
+    
+    // For condition nodes used as verifiers, also mark their branches as verification nodes
+    // (they're not executed in the normal flow)
+    for (const node of spec.graph.nodes) {
+      if (node.kind === "condition" && verificationNodes.has(node.id)) {
+        const condNode = node as any;
+        if (condNode.thenNodeId) {
+          verificationNodes.add(condNode.thenNodeId);
+        }
+        if (condNode.elseNodeId) {
+          verificationNodes.add(condNode.elseNodeId);
+        }
+      }
+    }
+    
     if (spec.graph.entryNodeId) {
       const queue: string[] = [spec.graph.entryNodeId];
       reachableNodes.add(spec.graph.entryNodeId);
@@ -138,23 +166,25 @@ export function validateHarnessSpec(spec: HarnessSpec): ValidationResult {
           }
         }
 
-        // Follow condition branches
-        const condBranches = conditionMap.get(current);
-        if (condBranches) {
-          if (condBranches.thenNodeId && !reachableNodes.has(condBranches.thenNodeId)) {
-            reachableNodes.add(condBranches.thenNodeId);
-            queue.push(condBranches.thenNodeId);
-          }
-          if (condBranches.elseNodeId && !reachableNodes.has(condBranches.elseNodeId)) {
-            reachableNodes.add(condBranches.elseNodeId);
-            queue.push(condBranches.elseNodeId);
+        // Follow condition branches (only if not used as verification node)
+        if (!verificationNodes.has(current)) {
+          const condBranches = conditionMap.get(current);
+          if (condBranches) {
+            if (condBranches.thenNodeId && !reachableNodes.has(condBranches.thenNodeId)) {
+              reachableNodes.add(condBranches.thenNodeId);
+              queue.push(condBranches.thenNodeId);
+            }
+            if (condBranches.elseNodeId && !reachableNodes.has(condBranches.elseNodeId)) {
+              reachableNodes.add(condBranches.elseNodeId);
+              queue.push(condBranches.elseNodeId);
+            }
           }
         }
       }
 
-      // Check for unreachable nodes
+      // Check for unreachable nodes (excluding verification nodes)
       for (const nodeId of nodeIds) {
-        if (!reachableNodes.has(nodeId)) {
+        if (!reachableNodes.has(nodeId) && !verificationNodes.has(nodeId)) {
           errors.push(`Unreachable node: ${nodeId}`);
         }
       }
@@ -169,7 +199,7 @@ export function validateHarnessSpec(spec: HarnessSpec): ValidationResult {
       }
     }
 
-    // Validate verification policy checkNodeId references
+    // Validate verification policy checkNodeId references and kind matching
     for (const node of spec.graph.nodes) {
       const nodeAny = node as any;
       if (nodeAny.verificationPolicy?.rules) {
@@ -180,6 +210,18 @@ export function validateHarnessSpec(spec: HarnessSpec): ValidationResult {
           // Check for self-reference
           if (rule.checkNodeId === node.id) {
             errors.push(`Verification rule in node ${node.id} cannot reference itself`);
+          }
+          
+          // Validate verification rule kind matches verifier node kind
+          if (rule.kind && rule.checkNodeId && nodeIds.has(rule.checkNodeId)) {
+            const verifierKind = nodeKinds.get(rule.checkNodeId);
+            if (rule.kind === "tool" && verifierKind !== "tool") {
+              errors.push(`Verification rule in node ${node.id} has kind "tool" but references verifier ${rule.checkNodeId} of kind "${verifierKind}"`);
+            } else if (rule.kind === "llm" && verifierKind !== "llm") {
+              errors.push(`Verification rule in node ${node.id} has kind "llm" but references verifier ${rule.checkNodeId} of kind "${verifierKind}"`);
+            } else if (rule.kind === "expression" && verifierKind !== "condition") {
+              errors.push(`Verification rule in node ${node.id} has kind "expression" but references verifier ${rule.checkNodeId} of kind "${verifierKind}" (expected "condition")`);
+            }
           }
         }
       }

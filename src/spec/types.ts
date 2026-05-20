@@ -229,8 +229,44 @@ export interface VerificationPolicy {
   rules: VerificationRule[];
 }
 
-export interface VerificationRule {
-  /** Node ID of the verification check to run */
+export type VerificationRule =
+  | ToolVerificationRule
+  | LlmVerificationRule
+  | ExpressionVerificationRule;
+
+export interface ToolVerificationRule {
+  /** Verification kind - tool verifier */
+  kind: "tool";
+
+  /** Node ID of the tool verification check to run */
+  checkNodeId: string;
+
+  /** Action to take on verification failure */
+  onFail: "block" | "warn" | "retry";
+
+  /** Maximum verification attempts (optional) */
+  maxAttempts?: number;
+}
+
+export interface LlmVerificationRule {
+  /** Verification kind - LLM verifier */
+  kind: "llm";
+
+  /** Node ID of the LLM verification check to run */
+  checkNodeId: string;
+
+  /** Action to take on verification failure */
+  onFail: "block" | "warn" | "retry";
+
+  /** Maximum verification attempts (optional) */
+  maxAttempts?: number;
+}
+
+export interface ExpressionVerificationRule {
+  /** Verification kind - expression verifier */
+  kind: "expression";
+
+  /** Node ID of the condition verification check to run */
   checkNodeId: string;
 
   /** Action to take on verification failure */

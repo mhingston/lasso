@@ -54,6 +54,7 @@ export interface CirTransition {
 export type CirFailureRoutingHint = FailureClassification;
 
 export interface CirVerificationHook {
+  kind: "tool" | "llm" | "expression";
   checkNodeId: string;
   onFail: VerificationRule["onFail"];
   maxAttempts?: number;

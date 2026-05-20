@@ -175,7 +175,23 @@ function validateVerificationHooks(node: CirNode, nodeMap: Map<string, CirNode>,
       errors.push(`Verification hook on ${node.id} cannot reference itself`);
     }
 
-    if (!verifierKinds.has(verifier.kind)) {
+    // Validate kind matching
+    if (hook.kind === "tool" && verifier.kind !== "tool") {
+      errors.push(
+        `Verification hook on ${node.id} has kind "tool" but references node ${hook.checkNodeId} of kind "${verifier.kind}"`,
+      );
+    } else if (hook.kind === "llm" && verifier.kind !== "llm") {
+      errors.push(
+        `Verification hook on ${node.id} has kind "llm" but references node ${hook.checkNodeId} of kind "${verifier.kind}"`,
+      );
+    } else if (hook.kind === "expression" && verifier.kind !== "condition") {
+      errors.push(
+        `Verification hook on ${node.id} has kind "expression" but references node ${hook.checkNodeId} of kind "${verifier.kind}" (expected "condition")`,
+      );
+    }
+
+    // Keep existing verifier kind check for backwards compatibility
+    if (!verifierKinds.has(verifier.kind) && hook.kind !== "expression") {
       errors.push(
         `Verification hook on ${node.id} references node ${hook.checkNodeId} of kind "${verifier.kind}", which cannot act as a verifier`,
       );

@@ -184,14 +184,41 @@ export const harnessSpecSchema = {
         rules: {
           type: "array",
           items: {
-            type: "object",
-            required: ["checkNodeId", "onFail"],
-            additionalProperties: false,
-            properties: {
-              checkNodeId: { type: "string", minLength: 1 },
-              onFail: { enum: ["block", "warn", "retry"] },
-              maxAttempts: { type: "number" }
-            }
+            oneOf: [
+              {
+                type: "object",
+                required: ["kind", "checkNodeId", "onFail"],
+                additionalProperties: false,
+                properties: {
+                  kind: { const: "tool" },
+                  checkNodeId: { type: "string", minLength: 1 },
+                  onFail: { enum: ["block", "warn", "retry"] },
+                  maxAttempts: { type: "number" }
+                }
+              },
+              {
+                type: "object",
+                required: ["kind", "checkNodeId", "onFail"],
+                additionalProperties: false,
+                properties: {
+                  kind: { const: "llm" },
+                  checkNodeId: { type: "string", minLength: 1 },
+                  onFail: { enum: ["block", "warn", "retry"] },
+                  maxAttempts: { type: "number" }
+                }
+              },
+              {
+                type: "object",
+                required: ["kind", "checkNodeId", "onFail"],
+                additionalProperties: false,
+                properties: {
+                  kind: { const: "expression" },
+                  checkNodeId: { type: "string", minLength: 1 },
+                  onFail: { enum: ["block", "warn", "retry"] },
+                  maxAttempts: { type: "number" }
+                }
+              }
+            ]
           }
         }
       }

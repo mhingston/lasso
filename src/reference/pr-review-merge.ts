@@ -106,6 +106,7 @@ export function buildPrReviewMergeHarnessSpec(input: LocalPrBundle): HarnessSpec
           verificationPolicy: {
             rules: [
               {
+                kind: "tool",
                 checkNodeId: prReviewMergeNodeIds.verifyPostMerge,
                 onFail: "block",
               },

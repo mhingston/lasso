@@ -203,6 +203,7 @@ function lowerVerification(rules: VerificationRule[] | undefined): CirVerificati
   }
 
   return rules.map(rule => ({
+    kind: rule.kind,
     checkNodeId: rule.checkNodeId,
     onFail: rule.onFail,
     ...(rule.maxAttempts !== undefined ? { maxAttempts: rule.maxAttempts } : {}),

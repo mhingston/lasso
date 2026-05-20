@@ -600,6 +600,7 @@ function createVerificationSpec(): HarnessSpec {
           verificationPolicy: {
             rules: [
               {
+                kind: "llm",
                 checkNodeId: "confirm-output",
                 onFail: "block",
               },
@@ -678,6 +679,7 @@ function createVerificationRetrySpec(): HarnessSpec {
           verificationPolicy: {
             rules: [
               {
+                kind: "llm",
                 checkNodeId: "confirm-output",
                 onFail: "retry",
               },
@@ -827,6 +829,7 @@ function createNestedVerifierSpec(): HarnessSpec {
           verificationPolicy: {
             rules: [
               {
+                kind: "tool",
                 checkNodeId: "nested-check",
                 onFail: "block",
               },
@@ -841,6 +844,7 @@ function createNestedVerifierSpec(): HarnessSpec {
           verificationPolicy: {
             rules: [
               {
+                kind: "tool",
                 checkNodeId: "final-check",
                 onFail: "block",
               },

@@ -388,12 +388,27 @@ function* executeNodeWithPolicies(
     }
 
     if (verificationOutcome.status === "block") {
+      // Record verification failure to harnessState
+      addFailure(state.harnessState, {
+        domainType: "lasso",
+        rootCause: "verification_failed",
+        nodeId: node.id,
+        message: verificationOutcome.message,
+      });
       throw new Error(verificationOutcome.message);
     }
 
     const retryCount = verificationRetryCounts.get(verificationOutcome.hook.checkNodeId) ?? 0;
     if (retryCount + 1 >= verificationOutcome.maxAttempts) {
-      throw new Error(`Verification retry exhausted for node ${node.id} via ${verificationOutcome.hook.checkNodeId}`);
+      const exhaustionMessage = `Verification retry exhausted for node ${node.id} via ${verificationOutcome.hook.checkNodeId}`;
+      // Record verification failure to harnessState
+      addFailure(state.harnessState, {
+        domainType: "lasso",
+        rootCause: "verification_failed",
+        nodeId: node.id,
+        message: exhaustionMessage,
+      });
+      throw new Error(exhaustionMessage);
     }
 
     verificationRetryCounts.set(verificationOutcome.hook.checkNodeId, retryCount + 1);
@@ -418,26 +433,62 @@ function* executeVerificationHooks(
 
   for (const hook of node.verification) {
     const verifierNode = getNode(nodeMap, hook.checkNodeId);
-    if (verifierNode.kind === "condition" || verifierNode.kind === "merge") {
-      throw new Error(`Verification node ${verifierNode.id} is not directly executable`);
-    }
-
-    const verifierOutput = yield* runWithRetry(ctx, state, verifierNode, function* () {
+    
+    let verifierOutput: unknown;
+    
+    // Handle expression verification specially
+    if (hook.kind === "expression") {
+      if (verifierNode.kind !== "condition") {
+        throw new Error(`Expression verification ${hook.checkNodeId} must reference a condition node`);
+      }
+      
       recordTrace(ctx, state, verifierNode, "enter", {
         verificationFor: node.id,
+        verificationType: "expression",
       });
-      const result = yield createActionYieldItem(ctx, verifierNode, workflowName);
+      
+      // Evaluate the condition expression directly
+      const expressionResult = evaluateConditionExpression(verifierNode.action.conditionExpr, state);
+      verifierOutput = expressionResult;
+      
+      // Record the expression evaluation result
+      state.outputs[verifierNode.id] = { 
+        evaluated: true, 
+        result: expressionResult,
+        expression: verifierNode.action.conditionExpr,
+      };
+      
       recordTrace(ctx, state, verifierNode, "success", {
         verificationFor: node.id,
+        verificationType: "expression",
+        result: expressionResult,
       });
-      return result;
-    });
-    state.outputs[verifierNode.id] = verifierOutput;
+    } else {
+      // Handle tool/llm verification
+      if (verifierNode.kind === "condition" || verifierNode.kind === "merge") {
+        throw new Error(`Verification node ${verifierNode.id} is not directly executable`);
+      }
+
+      verifierOutput = yield* runWithRetry(ctx, state, verifierNode, function* () {
+        recordTrace(ctx, state, verifierNode, "enter", {
+          verificationFor: node.id,
+          verificationType: hook.kind,
+        });
+        const result = yield createActionYieldItem(ctx, verifierNode, workflowName);
+        recordTrace(ctx, state, verifierNode, "success", {
+          verificationFor: node.id,
+          verificationType: hook.kind,
+        });
+        return result;
+      });
+      state.outputs[verifierNode.id] = verifierOutput;
+    }
 
     const outcome = interpretVerificationResult(hook, verifierOutput);
     if (outcome.status === "pass") {
       recordTrace(ctx, state, node, "verification-pass", {
         checkNodeId: hook.checkNodeId,
+        verificationType: hook.kind,
       });
       continue;
     }
@@ -445,6 +496,7 @@ function* executeVerificationHooks(
     if (outcome.status === "warn") {
       recordTrace(ctx, state, node, "verification-fail", {
         checkNodeId: hook.checkNodeId,
+        verificationType: hook.kind,
         warning: true,
       });
       continue;
@@ -452,6 +504,7 @@ function* executeVerificationHooks(
 
     recordTrace(ctx, state, node, "verification-fail", {
       checkNodeId: hook.checkNodeId,
+      verificationType: hook.kind,
     });
     return outcome;
   }
