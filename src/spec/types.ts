@@ -181,6 +181,12 @@ export interface ExecutionPolicy {
   /** Maximum memory in MB (optional) */
   maxMemory?: number;
 
+  /** Maximum number of node executions (optional) */
+  maxSteps?: number;
+
+  /** Maximum LLM cost in USD (optional) */
+  costLimitUsd?: number;
+
   /** Whether to continue on failure */
   continueOnFailure?: boolean;
 

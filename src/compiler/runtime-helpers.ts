@@ -31,6 +31,45 @@ export interface ExecutionState {
   trace: ExecutionTraceEntry[];
   harnessState: HarnessState;
   startTimeMs: number;
+  stepCount: number;
+  estimatedCostUsd: number;
+}
+
+export interface GuardrailState {
+  stepCount: number;
+  estimatedCostUsd: number;
+  maxSteps?: number;
+  costLimitUsd?: number;
+}
+
+export interface GuardrailResult {
+  withinLimits: boolean;
+  reason?: string;
+}
+
+export class GuardrailExceededError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "GuardrailExceededError";
+  }
+}
+
+export function checkGuardrails(state: GuardrailState): GuardrailResult {
+  if (state.maxSteps !== undefined && state.stepCount >= state.maxSteps) {
+    return {
+      withinLimits: false,
+      reason: `Step limit reached (${state.stepCount}/${state.maxSteps})`,
+    };
+  }
+
+  if (state.costLimitUsd !== undefined && state.estimatedCostUsd > state.costLimitUsd) {
+    return {
+      withinLimits: false,
+      reason: `Cost limit exceeded ($${state.estimatedCostUsd.toFixed(2)}/$${state.costLimitUsd.toFixed(2)})`,
+    };
+  }
+
+  return { withinLimits: true };
 }
 
 export interface FailureClassificationResult {

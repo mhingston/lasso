@@ -18,6 +18,7 @@ import { synthesizeHarness } from "../synthesis/harness-builder.js";
 import { compileHarnessSpec } from "../compiler/compile.js";
 import { analyzeCompiledWorkflow } from "../compiler/feedback.js";
 import { predictFailuresFromEnvironment } from "./predictor.js";
+import { generateFailureModes } from "../failures/generator.js";
 import { deriveMutationsFromFailure } from "../mutation/derive.js";
 import { mutateHarness } from "../mutation/engine.js";
 import { chainHarnesses } from "../composition/chain.js";
@@ -122,6 +123,9 @@ export class DefaultMetaHarness implements MetaHarness {
     // 4. Predict failures
     const predictedFailures = await this.predictFailures(spec, env);
 
+    // 4b. Generate failure modes from task description
+    const generatedFailureModes = generateFailureModes(intent, env, spec);
+
     // 5. Synthesize policies (mutate spec)
     spec = this.synthesizePolicies(spec, predictedFailures);
 
@@ -176,6 +180,7 @@ export class DefaultMetaHarness implements MetaHarness {
       environmentAnalysis: envAnalysis,
       memoryAdvice,
       predictedFailures,
+      generatedFailureModes,
       optimizations,
       readinessScore,
       compilerAnalysis,

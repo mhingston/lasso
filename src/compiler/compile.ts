@@ -10,7 +10,9 @@ import { addFailure, createHarnessState, recordNodeResult, updateMetrics } from 
 import type { HarnessState } from "../state/types.js";
 import {
   buildShellCommand,
+  checkGuardrails,
   evaluateConditionExpression,
+  GuardrailExceededError,
   recordTrace,
   runWithRetry,
   type ExecutionState,
@@ -145,6 +147,8 @@ function createWorkflowGenerator(
       trace: [],
       harnessState,
       startTimeMs,
+      stepCount: 0,
+      estimatedCostUsd: 0,
     };
     let currentNodeId = effectiveCir.entryNodeId;
 
@@ -175,8 +179,22 @@ function createWorkflowGenerator(
         continue;
       }
 
+      const guardrailResult = checkGuardrails({
+        stepCount: state.stepCount,
+        estimatedCostUsd: state.estimatedCostUsd,
+        maxSteps: effectiveSpec.executionPolicy?.maxSteps,
+        costLimitUsd: effectiveSpec.executionPolicy?.costLimitUsd,
+      });
+      if (!guardrailResult.withinLimits) {
+        throw new GuardrailExceededError(guardrailResult.reason!);
+      }
+
       const output = yield* executeNodeWithPolicies(ctx, state, node, effectiveNodeMap, effectiveCir.name);
       state.outputs[node.id] = output;
+      state.stepCount += 1;
+      if (node.kind === "llm") {
+        state.estimatedCostUsd += 0.01;
+      }
 
       const parallelMergePlan = effectiveParallelMergePlans.get(node.id);
       if (parallelMergePlan) {

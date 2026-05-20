@@ -190,6 +190,20 @@ export function validateHarnessSpec(spec: HarnessSpec): ValidationResult {
       }
     }
 
+    // Validate maxSteps is a positive integer
+    if (spec.executionPolicy?.maxSteps !== undefined) {
+      if (!Number.isInteger(spec.executionPolicy.maxSteps) || spec.executionPolicy.maxSteps < 1) {
+        errors.push("executionPolicy.maxSteps must be a positive integer");
+      }
+    }
+
+    // Validate costLimitUsd is a positive number
+    if (spec.executionPolicy?.costLimitUsd !== undefined) {
+      if (typeof spec.executionPolicy.costLimitUsd !== "number" || spec.executionPolicy.costLimitUsd <= 0) {
+        errors.push("executionPolicy.costLimitUsd must be a positive number");
+      }
+    }
+
     // Validate retry policy is only on supported node kinds
     const retryableKinds = new Set(["tool", "llm", "subworkflow"]);
     for (const node of spec.graph.nodes) {

@@ -145,6 +145,8 @@ export const harnessSpecSchema = {
       properties: {
         timeout: { type: "number" },
         maxMemory: { type: "number" },
+        maxSteps: { type: "number", minimum: 1 },
+        costLimitUsd: { type: "number", exclusiveMinimum: 0 },
         continueOnFailure: { type: "boolean" },
         failureClassification: {
           type: "array",
