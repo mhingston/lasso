@@ -53,7 +53,13 @@ Then, inside pi:
 - [Lineage persistence](#lineage-persistence)
 - [Verification engine](#verification-engine)
 - [Compiler optimizations](#compiler-optimizations)
+- [Compiler feedback](#compiler-feedback)
 - [Harness mutations](#harness-mutations)
+- [Harness memory](#harness-memory)
+- [Environment model](#environment-model)
+- [Failure ontology](#failure-ontology)
+- [Meta-harness](#meta-harness)
+- [Multi-harness composition](#multi-harness-composition)
 - [Capabilities](#capabilities)
 - [When to use Lasso](#when-to-use-lasso)
 - [Does it work with any workflow?](#does-it-work-with-any-workflow)
@@ -336,6 +342,145 @@ const result = planWorkflowRequest(brief, registry);
 When capabilities are specified in the intent, the graph builder constructs
 stages from capability verification steps and risk declarations instead of
 using hardcoded templates.
+
+## Compiler feedback
+
+The compiler feedback loop analyzes compiled workflows before execution to
+estimate cost, assess risk, and suggest improvements.
+
+```typescript
+import { analyzeCompiledWorkflow } from "lasso";
+
+const analysis = analyzeCompiledWorkflow(compiled);
+// analysis.cost.estimatedCostUsd
+// analysis.risk.costRisk, analysis.risk.failureRisk
+// analysis.suggestions — actionable improvements
+```
+
+### Cost estimation
+
+Counts LLM, tool, and human nodes to estimate duration and USD cost. LLM-heavy
+workflows are flagged with high cost risk.
+
+### Risk assessment
+
+Evaluates four risk dimensions:
+- **Cost risk** — high LLM count or expensive models
+- **Failure risk** — missing retry policies
+- **Quality risk** — no verification policies
+- **Complexity risk** — many nodes/edges
+
+### Auto-fix suggestions
+
+High-impact suggestions (add-retry, add-verification) are automatically applied
+during meta-harness generation, with recompilation to verify the fix.
+
+## Harness memory
+
+Harness memory tracks patterns across sessions so workflows don't begin from
+scratch.
+
+```typescript
+import { FileMemoryStore, adviseFromMemory } from "lasso";
+
+const store = new FileMemoryStore("/path/to/memory");
+const advice = await adviseFromMemory("deploy-staging", store);
+// advice.suggestions — "Previously, auth-check-before-deploy improved success rate"
+// advice.warnings — "Pattern deploy-without-auth failed 6 times"
+```
+
+Memory stores successful patterns, failed patterns, mutation history, and
+effectiveness scores. The adaptive replanner updates memory after each execution.
+
+## Environment model
+
+Before generating a harness, Lasso discovers the execution environment:
+
+```typescript
+import { discoverEnvironment, analyzeEnvironment } from "lasso";
+
+const env = await discoverEnvironment("/path/to/repo");
+// env.tools — available tools (bash, git, node, etc.)
+// env.constraints — detected constraints (auth, network, rate-limit)
+// env.repoState — branch, uncommitted changes, remotes
+
+const analysis = analyzeEnvironment(env, ["git", "node"]);
+// analysis.readinessScore — 0-100
+// analysis.preparatorySteps — actionable prep steps
+```
+
+The planner uses environment analysis to add preparatory nodes (tool checks,
+auth verification) before the main workflow.
+
+## Failure ontology
+
+Failures are classified into 7 categories with evidence and recovery plans:
+
+| Class | Examples | Recovery |
+|-------|----------|----------|
+| `auth` | 401, 403, token expired | Add auth-check node |
+| `tool` | command not found, exit code | Add tool-availability check |
+| `resource` | disk full, OOM, rate limit | Add resource-provisioning check |
+| `semantic` | assertion failed, schema mismatch | Add verification policy |
+| `human` | rejected, timeout | Toggle approval required |
+| `environment-drift` | version mismatch, config changed | Add environment check |
+| `network` | timeout, connection refused | Add retry with backoff |
+
+```typescript
+import { classifyFailure, suggestRecovery } from "lasso";
+
+const signature = classifyFailure(error, { nodeId: "deploy" });
+const recovery = suggestRecovery(signature);
+```
+
+## Meta-harness
+
+The meta-harness layer orchestrates the full generation pipeline:
+
+```typescript
+import { DefaultMetaHarness } from "lasso";
+
+const meta = new DefaultMetaHarness({
+  capabilityRegistry: new DefaultCapabilityRegistry(),
+  memoryStore: new FileMemoryStore("/path/to/memory"),
+});
+
+const result = await meta.generateHarness("Deploy my app to staging");
+// result.spec — generated HarnessSpec
+// result.environmentAnalysis — tool/resource availability
+// result.predictedFailures — anticipated failures with confidence
+// result.compilerAnalysis — cost estimate, risk assessment
+// result.readinessScore — 0-100
+```
+
+Pipeline: discover environment → query memory → plan workflow → predict failures
+→ synthesize policies → compile → analyze → return.
+
+## Multi-harness composition
+
+Compose multiple harnesses into chains, parallel executions, or conditionals:
+
+```typescript
+// Sequential chain
+const chained = meta.composeHarnesses([
+  { name: "research", spec: researchSpec },
+  { name: "plan", spec: planSpec },
+  { name: "execute", spec: executeSpec },
+]);
+
+// Parallel execution
+const parallel = meta.composeParallel([verificationSpec, notificationSpec]);
+
+// Conditional branching
+const conditional = meta.composeConditional(
+  "isProduction",
+  productionSpec,
+  stagingSpec,
+);
+```
+
+Node IDs are prefixed with stage names to avoid collisions. The composition
+produces a single combined `HarnessSpec` that compiles normally.
 
 ## When to use Lasso
 
