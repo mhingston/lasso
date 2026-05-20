@@ -178,7 +178,7 @@ interface LineageEntry {
   nodeResults: Record<string, unknown>;
   failures: HarnessState["failures"];
   metrics: HarnessState["metrics"];
-  trace: ExecutionTraceEntry[];
+  trace: HarnessExecutionTrace;
   completedAt: number;      // epoch ms
 }
 ```
@@ -931,5 +931,5 @@ Lasso does **not** currently aim to provide:
 - autonomous code authoring or patch generation
 - LLM-backed planning or replanning
 - automatic compile/run behavior from `/lasso:plan` or `/lasso:replan`
-- adaptive mutation of already-running workflows
+- adaptive mutation of already-running workflows (mutation engine exists but is request-level, not mid-execution)
 - arbitrary generated TypeScript
