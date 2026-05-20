@@ -137,5 +137,34 @@ describe("graph-builder", () => {
         expect(graph.stages[3].dependencies).toEqual(["verify-tests"]);
       });
     });
+    
+    describe("stage metadata accuracy", () => {
+      it("should list actual input field names in requiredInputs, not derived fields", () => {
+        const intent: IntentIR = {
+          family: "patch-validation",
+          goal: "Validate patch against baseline",
+          inputs: {
+            repoPath: "/path/to/repo",
+            baselineRef: "v1.0.0",
+            candidateBranch: "fix-branch",
+            reproduceCommands: ["npm run fail-test"],
+            verificationCommands: ["npm test"],
+            reviewInstructions: "Check fix"
+          },
+          requiredTools: ["git"],
+          humanCheckpoints: [],
+          verificationTargets: ["npm test"]
+        };
+        
+        const graph = buildTaskGraph(intent);
+        
+        const applyStage = graph.stages.find(s => s.id === "apply-candidate");
+        expect(applyStage).toBeDefined();
+        
+        // Should list actual input names (candidateBranch, patchFilePath), not the derived "candidateSource"
+        expect(applyStage!.requiredInputs).toEqual(["candidateBranch", "patchFilePath"]);
+        expect(applyStage!.requiredInputs).not.toContain("candidateSource");
+      });
+    });
   });
 });

@@ -128,18 +128,167 @@ function extractionResultToIntentIR(extracted: ExtractionResult): IntentParseRes
   return { success: true, intent };
 }
 
+function normalizeInputValue(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+
+  const trimmedValue = value.trim();
+  
+  // Normalize array-like strings: "[npm test, npm run lint]" -> ["npm test", "npm run lint"]
+  // Handle empty arrays: "[]" -> []
+  const arrayMatch = trimmedValue.match(/^\[(.*)\]$/);
+  if (arrayMatch) {
+    const content = arrayMatch[1].trim();
+    
+    // Handle empty array
+    if (content.length === 0) {
+      return [];
+    }
+    
+    // Parse array with quote-aware splitting
+    return parseQuotedArray(content);
+  }
+  
+  // Normalize boolean-like strings: "true" -> true, "false" -> false
+  if (trimmedValue.toLowerCase() === "true") {
+    return true;
+  }
+  if (trimmedValue.toLowerCase() === "false") {
+    return false;
+  }
+  
+  return trimmedValue.replace(/^["']|["']$/g, "");
+}
+
+/**
+ * Parse a comma-separated string while respecting quoted strings.
+ * Handles both single and double quotes.
+ * Examples:
+ *   "a, b, c" -> ["a", "b", "c"]
+ *   '"echo hello", "npm test"' -> ["echo hello", "npm test"]
+ *   '"echo \'hello, world\'", npm test' -> ["echo 'hello, world'", "npm test"]
+ */
+function parseQuotedArray(content: string): string[] {
+  const items: string[] = [];
+  let current = "";
+  let inQuote: "'" | '"' | null = null;
+  let escaped = false;
+  
+  for (let i = 0; i < content.length; i++) {
+    const char = content[i];
+    
+    if (escaped) {
+      // Handle escaped character - convert \\ and \" / \' to actual characters
+      if (char === '"' || char === "'" || char === "\\") {
+        current += char;
+      } else {
+        current += "\\" + char;
+      }
+      escaped = false;
+      continue;
+    }
+    
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    
+    if (char === '"' || char === "'") {
+      if (inQuote === null) {
+        // Starting a quoted string
+        inQuote = char;
+        current += char;
+      } else if (inQuote === char) {
+        // Ending the current quoted string
+        current += char;
+        inQuote = null;
+      } else {
+        // Different quote type inside current quote
+        current += char;
+      }
+      continue;
+    }
+    
+    if (char === "," && inQuote === null) {
+      // Split point - not inside quotes
+      const trimmed = current.trim();
+      if (trimmed.length > 0) {
+        // Remove outer quotes if present
+        items.push(trimmed.replace(/^["']|["']$/g, ''));
+      }
+      current = "";
+      continue;
+    }
+    
+    current += char;
+  }
+  
+  // Add the last item
+  const trimmed = current.trim();
+  if (trimmed.length > 0) {
+    items.push(trimmed.replace(/^["']|["']$/g, ''));
+  }
+  
+  return items.filter(item => item.length > 0);
+}
+
+/**
+ * Normalize skill inputs and merge verification targets into verificationCommands.
+ * This logic is shared between PR review and patch validation workflows.
+ */
+function normalizeAndMergeVerification(
+  skill: SkillMarkdown
+): { normalizedInputs: Record<string, unknown>; verificationCommands: string[] } {
+  const normalizedInputs: Record<string, unknown> = {};
+  
+  // Normalize all inputs
+  if (skill.inputs) {
+    for (const [key, value] of Object.entries(skill.inputs)) {
+      normalizedInputs[key] = normalizeInputValue(value);
+    }
+  }
+
+  for (const commandKey of ["reproduceCommands", "verificationCommands"] as const) {
+    const commandValue = normalizedInputs[commandKey];
+    if (typeof commandValue === "string") {
+      normalizedInputs[commandKey] = [commandValue];
+    }
+  }
+  
+  // Merge verification targets into verificationCommands
+  let verificationCommands = normalizedInputs.verificationCommands as string[] | undefined;
+  if (skill.verificationTargets && skill.verificationTargets.length > 0) {
+    if (!verificationCommands) {
+      verificationCommands = [];
+    } else if (!Array.isArray(verificationCommands)) {
+      // Shouldn't happen after normalization, but guard anyway
+      verificationCommands = [];
+    }
+    verificationCommands = [...new Set([...verificationCommands, ...skill.verificationTargets])];
+    normalizedInputs.verificationCommands = verificationCommands;
+  }
+  
+  return {
+    normalizedInputs,
+    verificationCommands: verificationCommands || skill.verificationTargets || []
+  };
+}
+
 function skillMarkdownToIntentIR(skill: SkillMarkdown): IntentParseResult {
   // If workflow is explicitly specified, use it directly if supported
   if (skill.workflow) {
     const lowerWorkflow = skill.workflow.toLowerCase();
     if (lowerWorkflow === "pr-review-merge" || lowerWorkflow.includes("pr") || lowerWorkflow.includes("pull request")) {
+      const { normalizedInputs, verificationCommands } = normalizeAndMergeVerification(skill);
+      
       const intent: IntentIR = {
         family: "pr-review-merge",
         goal: "Review and merge PR",
-        inputs: skill.inputs || {},
+        inputs: normalizedInputs,
         requiredTools: ["git"],
         humanCheckpoints: [],
-        verificationTargets: skill.verificationTargets || []
+        verificationTargets: verificationCommands
       };
       
       const validation = validateIntent(intent);
@@ -149,16 +298,18 @@ function skillMarkdownToIntentIR(skill: SkillMarkdown): IntentParseResult {
       
       return { success: true, intent };
     } else if (lowerWorkflow === "patch-validation" || lowerWorkflow.includes("patch") || lowerWorkflow.includes("validation")) {
+      const { normalizedInputs, verificationCommands } = normalizeAndMergeVerification(skill);
+      
       const intent: IntentIR = {
         family: "patch-validation",
         goal: "Validate patch against baseline",
-        inputs: skill.inputs || {},
+        inputs: normalizedInputs,
         requiredTools: ["git"],
         humanCheckpoints: [],
-        verificationTargets: skill.verificationTargets || []
+        verificationTargets: verificationCommands
       };
       
-      if (skill.inputs && skill.inputs.approvalRequired === true) {
+      if (normalizedInputs.approvalRequired === true) {
         intent.humanCheckpoints.push("approval-gate");
       }
       

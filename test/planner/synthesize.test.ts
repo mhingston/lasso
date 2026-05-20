@@ -642,4 +642,261 @@ describe("planWorkflowRequest", () => {
       }
     });
   });
+  
+  describe("skill-markdown at planner level", () => {
+    it("should handle PR review skill markdown with normalization", () => {
+      const skillMarkdown = `
+# PR Review Workflow
+
+workflow: pr-review-merge
+
+## Inputs
+- repoPath: /Users/test/repo
+- sourceBranch: feature
+- targetBranch: main
+- reviewInstructions: Check code quality
+- verificationCommands: [npm test, npm run lint]
+
+## Verification
+- npm run e2e
+      `;
+      
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("draft_request");
+      
+      if (result.status === "draft_request" && result.request.workflow === "pr-review-merge") {
+        const input = result.request.input;
+        expect(input.repoPath).toBe("/Users/test/repo");
+        expect(input.sourceBranch).toBe("feature");
+        expect(input.targetBranch).toBe("main");
+        expect(input.reviewInstructions).toBe("Check code quality");
+        // Should be normalized to array including both inputs and verification section
+        expect(Array.isArray(input.verificationCommands)).toBe(true);
+        expect(input.verificationCommands).toEqual(["npm test", "npm run lint", "npm run e2e"]);
+      }
+    });
+    
+    it("should handle patch validation skill markdown with array and boolean normalization", () => {
+      const skillMarkdown = `
+# Patch Validation Workflow
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /home/user/project
+- baselineRef: v1.0.0
+- candidateBranch: fix-branch
+- reproduceCommands: [npm run fail-test, node reproduce.js]
+- verificationCommands: [npm test]
+- reviewInstructions: Validate the fix
+- approvalRequired: true
+
+## Verification
+- npm run integration
+      `;
+      
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("draft_request");
+      
+      if (result.status === "draft_request" && result.request.workflow === "patch-validation") {
+        const input = result.request.input;
+        expect(input.repoPath).toBe("/home/user/project");
+        expect(input.baselineRef).toBe("v1.0.0");
+        expect(input.candidateSource.kind).toBe("branch");
+        expect(input.candidateSource.value).toBe("fix-branch");
+        // Arrays should be normalized from string representation
+        expect(Array.isArray(input.reproduceCommands)).toBe(true);
+        expect(input.reproduceCommands).toEqual(["npm run fail-test", "node reproduce.js"]);
+        expect(Array.isArray(input.verificationCommands)).toBe(true);
+        expect(input.verificationCommands).toEqual(["npm test", "npm run integration"]);
+        // Boolean should be normalized from string "true"
+        expect(typeof input.approvalRequired).toBe("boolean");
+        expect(input.approvalRequired).toBe(true);
+      }
+    });
+    
+    it("should populate verificationCommands from Verification section when not in inputs", () => {
+      const skillMarkdown = `
+# Patch Validation Workflow
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /home/user/project
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- reviewInstructions: Check fix
+
+## Verification
+- npm test
+- npm run integration
+      `;
+      
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("draft_request");
+      
+      if (result.status === "draft_request" && result.request.workflow === "patch-validation") {
+        const input = result.request.input;
+        // Verification section should populate verificationCommands
+        expect(Array.isArray(input.verificationCommands)).toBe(true);
+        expect(input.verificationCommands).toEqual(["npm test", "npm run integration"]);
+      }
+    });
+  });
+  
+  describe("empty command array validation", () => {
+    it("should reject PR review when verificationCommands is empty array", () => {
+      const skillMarkdown = `
+# PR Review Workflow
+
+workflow: pr-review-merge
+
+## Inputs
+- repoPath: /Users/test/repo
+- sourceBranch: feature
+- targetBranch: main
+- reviewInstructions: Check code quality
+- verificationCommands: []
+      `;
+      
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("needs_clarification");
+      
+      if (result.status === "needs_clarification") {
+        expect(result.missingFields).toContain("verificationCommands");
+        expect(result.candidateWorkflow).toBe("pr-review-merge");
+      }
+    });
+    
+    it("should reject patch validation when reproduceCommands is empty array", () => {
+      const skillMarkdown = `
+# Patch Validation
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /home/user/project
+- baselineRef: main
+- candidateBranch: fix-branch
+- reproduceCommands: []
+- verificationCommands: [npm test]
+- reviewInstructions: Validate fix
+      `;
+      
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("needs_clarification");
+      
+      if (result.status === "needs_clarification") {
+        expect(result.missingFields).toContain("reproduceCommands");
+        expect(result.candidateWorkflow).toBe("patch-validation");
+      }
+    });
+    
+    it("should reject patch validation when verificationCommands is empty array", () => {
+      const skillMarkdown = `
+# Patch Validation
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /home/user/project
+- baselineRef: main
+- candidateBranch: fix-branch
+- reproduceCommands: [npm run fail]
+- verificationCommands: []
+- reviewInstructions: Validate fix
+      `;
+      
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("needs_clarification");
+      
+      if (result.status === "needs_clarification") {
+        expect(result.missingFields).toContain("verificationCommands");
+        expect(result.candidateWorkflow).toBe("patch-validation");
+      }
+    });
+  });
+  
+  describe("commands with commas in quoted strings", () => {
+    it("should preserve commas inside quoted command strings", () => {
+      const skillMarkdown = `
+# PR Review Workflow
+
+workflow: pr-review-merge
+
+## Inputs
+- repoPath: /Users/test/repo
+- sourceBranch: feature
+- targetBranch: main
+- reviewInstructions: Check code quality
+- verificationCommands: ["echo 'hello, world'", "npm test --reporter 'json, summary'"]
+      `;
+      
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("draft_request");
+      
+      if (result.status === "draft_request" && result.request.workflow === "pr-review-merge") {
+        const input = result.request.input;
+        expect(input.verificationCommands).toEqual([
+          "echo 'hello, world'",
+          "npm test --reporter 'json, summary'"
+        ]);
+      }
+    });
+    
+    it("should handle commands with double-quoted strings containing commas", () => {
+      const skillMarkdown = `
+# Patch Validation
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /home/user/project
+- baselineRef: main
+- candidateBranch: fix-branch
+- reproduceCommands: ["node test.js --data \\"a, b, c\\"", "npm run fail"]
+- verificationCommands: ["npm test"]
+- reviewInstructions: Validate fix
+      `;
+      
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("draft_request");
+      
+      if (result.status === "draft_request" && result.request.workflow === "patch-validation") {
+        const input = result.request.input;
+        expect(input.reproduceCommands).toEqual([
+          'node test.js --data "a, b, c"',
+          "npm run fail"
+        ]);
+      }
+    });
+  });
+
+  describe("single command string normalization", () => {
+    it("should normalize quoted single command strings into arrays", () => {
+      const skillMarkdown = `
+# Patch Validation
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /home/user/project
+- baselineRef: main
+- candidateBranch: fix-branch
+- reproduceCommands: "npm run fail"
+- verificationCommands: 'npm test'
+- reviewInstructions: "Validate fix"
+      `;
+
+      const result = planWorkflowRequest(skillMarkdown);
+      expect(result.status).toBe("draft_request");
+
+      if (result.status === "draft_request" && result.request.workflow === "patch-validation") {
+        expect(result.request.input.reproduceCommands).toEqual(["npm run fail"]);
+        expect(result.request.input.verificationCommands).toEqual(["npm test"]);
+        expect(result.request.input.reviewInstructions).toBe("Validate fix");
+      }
+    });
+  });
 });

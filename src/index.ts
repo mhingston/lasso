@@ -17,7 +17,6 @@ export type { IntentIR, IntentParseResult, SupportedWorkflowFamily } from "./syn
 export type { TaskGraph as SynthesisTaskGraph, WorkflowStage } from "./synthesis/graph-builder.js";
 export type { RiskModel, StageRisk } from "./synthesis/risk-analyzer.js";
 export type { PolicyBundle, PolicyResult } from "./synthesis/policy-builder.js";
-export type { HarnessSynthesisResult } from "./synthesis/harness-builder.js";
 export { validateHarnessSpec } from "./spec/validate.js";
 export { lowerHarnessSpecToCir } from "./cir/lower.js";
 export { compileHarnessSpec } from "./compiler/compile.js";

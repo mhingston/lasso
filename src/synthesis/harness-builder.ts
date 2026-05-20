@@ -4,20 +4,26 @@ import { buildPrReviewMergeHarnessSpec } from "../reference/pr-review-merge.js";
 import type { LocalPatchValidationBundle, LocalPrBundle } from "../reference/types.js";
 import type { TaskGraph } from "./graph-builder.js";
 import type { RiskModel } from "./risk-analyzer.js";
-import type { PolicyBundle } from "./policy-builder.js";
+import { synthesizePolicy } from "./policy-builder.js";
 
-export interface HarnessSynthesisResult {
-  success: true;
+interface HarnessSynthesisResult {
   spec: HarnessSpec;
   rationale: string[];
   warnings: string[];
 }
 
-export function synthesizeHarness(
+function synthesizeHarnessResult(
   graph: TaskGraph,
-  risks: RiskModel,
-  policy: PolicyBundle
+  risks: RiskModel
 ): HarnessSynthesisResult {
+  // Derive policy from graph and risks
+  const policyResult = synthesizePolicy(graph, risks);
+  
+  if (!policyResult.success) {
+    throw new Error(`Policy synthesis failed: ${policyResult.reasons.join(", ")}`);
+  }
+  
+  const policy = policyResult.policy;
   let spec: HarnessSpec;
   
   if (policy.workflow === "patch-validation") {
@@ -29,9 +35,12 @@ export function synthesizeHarness(
   }
   
   return {
-    success: true,
     spec,
     rationale: policy.rationale,
     warnings: policy.warnings
   };
+}
+
+export function synthesizeHarness(graph: TaskGraph, risks: RiskModel): HarnessSpec {
+  return synthesizeHarnessResult(graph, risks).spec;
 }

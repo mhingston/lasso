@@ -40,7 +40,7 @@ export function buildTaskGraph(intent: IntentIR): TaskGraph {
       type: "apply",
       dependencies: ["reproduce-bug"],
       description: "Apply candidate fix",
-      requiredInputs: ["candidateBranch", "patchFilePath"]
+      requiredInputs: ["candidateBranch", "patchFilePath"]  // One of these must be present
     });
     
     stages.push({
