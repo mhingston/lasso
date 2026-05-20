@@ -1,4 +1,8 @@
 import type { ReferenceWorkflowRequest } from "../reference/catalog.js";
+import type { parsePromptOrSkill } from "../synthesis/skill-parser.js";
+import type { buildTaskGraph } from "../synthesis/graph-builder.js";
+import type { analyzeRisks } from "../synthesis/risk-analyzer.js";
+import type { synthesizePolicy } from "../synthesis/policy-builder.js";
 
 export type PlannerResult =
   | { 
@@ -33,3 +37,6 @@ export interface ExtractionResult {
   reviewInstructions?: string;
   approvalRequired?: boolean;
 }
+
+// Re-export synthesis types that planner users may need
+export type { parsePromptOrSkill, buildTaskGraph, analyzeRisks, synthesizePolicy };
