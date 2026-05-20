@@ -1,6 +1,8 @@
 # Lasso
 
-![Agent Wrangling](docs/agent-wrangling.png)
+<p align="center">
+  <img src="docs/agent-wrangling.png" width="600" alt="Agent Wrangling" />
+</p>
 
 Lasso is a dynamic harness engine built on `pi-duroxide`. It goes from intent to
 executable workflow — and repairs the harness while it runs.
