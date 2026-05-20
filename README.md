@@ -50,6 +50,7 @@ Then, inside pi:
 - [Slash commands](#slash-commands)
 - [Request examples](#request-examples)
 - [Custom workflows (advanced)](#custom-workflows-advanced)
+- [HarnessSpec reference](#harnessspec-reference)
 - [How Lasso fits with pi-duroxide](#how-lasso-fits-with-pi-duroxide)
 - [Non-goals](#non-goals)
 
@@ -351,6 +352,291 @@ The generic package surface is:
 That is the part of Lasso designed to work with **arbitrary workflow shapes**.
 What is still intentionally narrow is the built-in request catalog and the
 natural-language planning/replanning layer.
+
+## HarnessSpec reference
+
+This section documents the actual `HarnessSpec` format accepted by
+`validateHarnessSpec(...)`, `/lasso:compile`, and `/lasso:run`.
+
+The canonical sources are:
+
+- `src/spec/types.ts` for the public TypeScript types
+- `src/spec/schema.ts` for the JSON schema enforced by validation
+- `src/spec/validate.ts` for extra structural checks beyond the JSON schema
+
+### Top-level shape
+
+```json
+{
+  "name": "workflow-name",
+  "graph": {
+    "entryNodeId": "start",
+    "nodes": [],
+    "edges": []
+  },
+  "executionPolicy": {},
+  "humanPolicy": {},
+  "observabilityPolicy": {}
+}
+```
+
+| Field | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `name` | Yes | `string` | Unique workflow name used when the workflow is registered |
+| `graph` | Yes | `object` | Contains `entryNodeId`, `nodes`, and `edges` |
+| `executionPolicy` | No | `object` | Global execution settings |
+| `humanPolicy` | No | `object` | Defaults for human interaction behavior |
+| `observabilityPolicy` | No | `object` | Trace / metrics / logging settings |
+
+All top-level objects are **strict**. Unknown fields are rejected by schema
+validation.
+
+### Graph shape
+
+```json
+{
+  "entryNodeId": "start",
+  "nodes": [
+    {
+      "id": "start",
+      "kind": "tool",
+      "tool": "bash",
+      "args": ["-lc", "echo hello"]
+    }
+  ],
+  "edges": []
+}
+```
+
+| Field | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `entryNodeId` | Yes | `string` | Must match an existing node `id` |
+| `nodes` | Yes | `TaskNode[]` | Array of node definitions |
+| `edges` | Yes | `TaskEdge[]` | Each edge is `{ "from": "node-a", "to": "node-b" }` |
+
+### Shared node fields
+
+Every node kind includes:
+
+| Field | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `id` | Yes | `string` | Must be unique across the graph |
+| `kind` | Yes | `string` | One of `tool`, `llm`, `human`, `condition`, `merge`, `subworkflow` |
+| `label` | No | `string` | Human-readable label |
+| `executionPolicy` | No | `object` | Per-node execution settings |
+| `verificationPolicy` | No | `object` | Verification rules for this node |
+
+`retryPolicy` is only valid on `tool`, `llm`, and `subworkflow` nodes.
+
+### Node kinds
+
+#### `tool`
+
+```json
+{
+  "id": "run-tests",
+  "kind": "tool",
+  "tool": "bash",
+  "args": ["-lc", "npm test"],
+  "env": { "CI": "true" },
+  "cwd": "/repo"
+}
+```
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `tool` | Yes | `string` |
+| `args` | Yes | `string[]` |
+| `env` | No | `Record<string, string>` |
+| `cwd` | No | `string` |
+| `retryPolicy` | No | `RetryPolicy` |
+
+#### `llm`
+
+```json
+{
+  "id": "summarize",
+  "kind": "llm",
+  "provider": "openai",
+  "model": "gpt-4.1",
+  "prompt": "Summarize the failing test output.",
+  "system": "Be concise."
+}
+```
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `provider` | Yes | `string` |
+| `model` | Yes | `string` |
+| `prompt` | Yes | `string` |
+| `system` | No | `string` |
+| `temperature` | No | `number` |
+| `maxTokens` | No | `number` |
+| `retryPolicy` | No | `RetryPolicy` |
+
+#### `human`
+
+```json
+{
+  "id": "approve",
+  "kind": "human",
+  "prompt": "Approve this change?",
+  "interactionType": "approval",
+  "timeout": 600
+}
+```
+
+| Field | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `prompt` | Yes | `string` | Prompt shown to the human |
+| `interactionType` | Yes | `"approval" \| "input" \| "choice"` | |
+| `options` | No | `string[]` | Required in practice when `interactionType` is `choice` |
+| `timeout` | No | `number` | Seconds |
+
+#### `condition`
+
+```json
+{
+  "id": "check-result",
+  "kind": "condition",
+  "condition": "outputs.run-tests.exitCode == 0",
+  "thenNodeId": "success",
+  "elseNodeId": "failure"
+}
+```
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `condition` | Yes | `string` |
+| `thenNodeId` | Yes | `string` |
+| `elseNodeId` | Yes | `string` |
+
+#### `merge`
+
+```json
+{
+  "id": "join",
+  "kind": "merge",
+  "waitFor": ["branch-a", "branch-b"],
+  "strategy": "all"
+}
+```
+
+| Field | Required | Type | Notes |
+| --- | --- | --- | --- |
+| `waitFor` | Yes | `string[]` | Must contain at least one node id |
+| `strategy` | No | `"all" \| "any" \| "majority"` | Defaults are handled by runtime/compiler logic |
+
+#### `subworkflow`
+
+```json
+{
+  "id": "child",
+  "kind": "subworkflow",
+  "specRef": "shared-child-spec",
+  "inputs": {
+    "repoPath": "/repo"
+  }
+}
+```
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `specRef` | Yes | `string` |
+| `inputs` | No | `Record<string, unknown>` |
+| `retryPolicy` | No | `RetryPolicy` |
+
+### Policy objects
+
+#### `executionPolicy`
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `timeout` | No | `number` |
+| `maxMemory` | No | `number` |
+| `continueOnFailure` | No | `boolean` |
+| `failureClassification` | No | `FailureClassification[]` |
+
+`failureClassification` items use:
+
+```json
+{
+  "pattern": "timeout",
+  "category": "transient",
+  "retry": true
+}
+```
+
+Where `category` is one of `transient`, `permanent`, `resource`, or
+`configuration`.
+
+#### `retryPolicy`
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `maxAttempts` | Yes | `number` |
+| `backoff` | Yes | `"constant" \| "linear" \| "exponential"` |
+| `initialDelay` | No | `number` |
+| `maxDelay` | No | `number` |
+| `retryOn` | No | `("transient" \| "resource")[]` |
+
+#### `verificationPolicy`
+
+```json
+{
+  "rules": [
+    {
+      "checkNodeId": "verify-tests",
+      "onFail": "retry",
+      "maxAttempts": 2
+    }
+  ]
+}
+```
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `rules` | Yes | `VerificationRule[]` |
+
+Each rule uses:
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `checkNodeId` | Yes | `string` |
+| `onFail` | Yes | `"block" \| "warn" \| "retry"` |
+| `maxAttempts` | No | `number` |
+
+#### `humanPolicy`
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `defaultTimeout` | No | `number` |
+| `allowAsync` | No | `boolean` |
+| `notificationChannels` | No | `string[]` |
+
+#### `observabilityPolicy`
+
+| Field | Required | Type |
+| --- | --- | --- |
+| `tracing` | No | `boolean` |
+| `metrics` | No | `boolean` |
+| `logLevel` | No | `"debug" \| "info" \| "warn" \| "error"` |
+| `logDestinations` | No | `string[]` |
+
+### Important validation rules
+
+In addition to JSON schema validation, Lasso also enforces structural rules:
+
+1. node ids must be unique
+2. `entryNodeId` must exist
+3. every edge `from` / `to` must reference an existing node
+4. `condition.thenNodeId` and `condition.elseNodeId` must reference existing nodes
+5. `merge.waitFor` must not be empty and must reference existing nodes
+6. `human` nodes with `interactionType: "choice"` must include non-empty `options`
+7. unreachable nodes are rejected
+8. `retryPolicy` is rejected on unsupported node kinds
+9. verification rules cannot reference missing nodes or the node itself
+10. circular verification dependencies are rejected
 
 ## How Lasso fits with pi-duroxide
 
