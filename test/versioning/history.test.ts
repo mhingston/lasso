@@ -71,13 +71,20 @@ describe("versioning/history", () => {
         terminalNodeId: "success",
         result: { output: "test" },
         outputs: { start: { stdout: "test" } },
-        trace: [
-          {
-            nodeId: "start",
-            source: { kind: "user-task", nodeId: "start" },
-            phase: "enter",
-          },
-        ],
+        trace: {
+          entries: [
+            {
+              nodeId: "start",
+              source: { kind: "user-task", nodeId: "start" },
+              phase: "enter",
+            },
+          ],
+          totalDurationMs: 100,
+          nodeCount: 1,
+          failureCount: 0,
+          startTimeMs: Date.now() - 100,
+          endTimeMs: Date.now(),
+        },
         harnessState: {
           inputs: {},
           outputs: { start: { stdout: "test" } },
@@ -99,17 +106,25 @@ describe("versioning/history", () => {
       expect(lineage.nodeResults).toEqual({ start: { stdout: "test" } });
       expect(lineage.failures).toEqual([]);
       expect(lineage.metrics).toEqual({ retries: 0, durationMs: 100 });
-      expect(lineage.trace).toHaveLength(1);
+      expect(lineage.trace.entries).toHaveLength(1);
       expect(lineage.completedAt).toBeGreaterThan(0);
     });
 
     it("should deep clone result data", () => {
+      const now = Date.now();
       const mockResult: CompiledHarnessResult = {
         status: "completed",
         terminalNodeId: "success",
         result: { output: "test" },
         outputs: { start: { stdout: "test" } },
-        trace: [],
+        trace: {
+          entries: [],
+          totalDurationMs: 100,
+          nodeCount: 0,
+          failureCount: 0,
+          startTimeMs: now - 100,
+          endTimeMs: now,
+        },
         harnessState: {
           inputs: {},
           outputs: { start: { stdout: "test" } },

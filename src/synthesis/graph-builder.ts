@@ -1,10 +1,16 @@
 import type { IntentIR, IntentStep, SupportedWorkflowFamily } from "./intent-ir.js";
+import type { CapabilityRegistry } from "../capabilities/types.js";
+import { matchCapabilities } from "../capabilities/matcher.js";
 
 export interface TaskGraph {
   family: SupportedWorkflowFamily;
   stages: WorkflowStage[];
   inputs: Record<string, unknown>;
   goal: string;
+  capabilityMatch?: {
+    matched: string[];
+    missing: string[];
+  };
 }
 
 export interface WorkflowStage {
@@ -30,10 +36,79 @@ function stepKindToStageType(kind: IntentStep["kind"]): WorkflowStage["type"] {
   }
 }
 
-export function buildTaskGraph(intent: IntentIR): TaskGraph {
+function buildCapabilityStages(intent: IntentIR, registry: CapabilityRegistry): { stages: WorkflowStage[]; matched: string[]; missing: string[] } {
   const stages: WorkflowStage[] = [];
+  const requiredTools = intent.capabilities || intent.requiredTools;
+  const { matched, missing } = matchCapabilities(requiredTools, registry);
+
+  if (matched.length === 0) {
+    return { stages: [], matched: [], missing };
+  }
+
+  const setupStageId = "capability-setup";
+  stages.push({
+    id: setupStageId,
+    type: "setup",
+    dependencies: [],
+    description: `Verify required capabilities: ${matched.map(c => c.name).join(", ")}`,
+    requiredInputs: []
+  });
+
+  let prevStageId = setupStageId;
+
+  for (const cap of matched) {
+    if (cap.verification.length > 0) {
+      const verifyStageId = `capability-verify-${cap.id}`;
+      stages.push({
+        id: verifyStageId,
+        type: "verify",
+        dependencies: [prevStageId],
+        description: `Verify ${cap.name}: ${cap.verification.join("; ")}`,
+        requiredInputs: []
+      });
+      prevStageId = verifyStageId;
+    }
+
+    if (cap.risks.length > 0) {
+      const riskStageId = `capability-risk-${cap.id}`;
+      stages.push({
+        id: riskStageId,
+        type: "review",
+        dependencies: [prevStageId],
+        description: `Assess risks for ${cap.name}: ${cap.risks.join("; ")}`,
+        requiredInputs: []
+      });
+      prevStageId = riskStageId;
+    }
+
+    if (cap.kind === "human") {
+      stages.push({
+        id: `capability-approval-${cap.id}`,
+        type: "approval",
+        dependencies: [prevStageId],
+        description: `Human approval required: ${cap.name}`,
+        requiredInputs: []
+      });
+    }
+  }
+
+  return { stages, matched: matched.map(c => c.id), missing };
+}
+
+export function buildTaskGraph(intent: IntentIR, registry?: CapabilityRegistry): TaskGraph {
+  const stages: WorkflowStage[] = [];
+  let capabilityMatch: { matched: string[]; missing: string[] } | undefined;
+
+  const hasCapabilities = intent.capabilities && intent.capabilities.length > 0;
+  const useCapabilityPath = hasCapabilities && registry;
+
+  if (useCapabilityPath) {
+    const result = buildCapabilityStages(intent, registry);
+    stages.push(...result.stages);
+    capabilityMatch = { matched: result.matched, missing: result.missing };
+  }
   
-  if (intent.family === "patch-validation") {
+  if (intent.family === "patch-validation" && !useCapabilityPath) {
     stages.push({
       id: "setup-baseline",
       type: "setup",
@@ -83,7 +158,7 @@ export function buildTaskGraph(intent: IntentIR): TaskGraph {
         requiredInputs: []
       });
     }
-  } else if (intent.family === "pr-review-merge") {
+  } else if (intent.family === "pr-review-merge" && !useCapabilityPath) {
     stages.push({
       id: "setup-pr",
       type: "setup",
@@ -150,6 +225,7 @@ export function buildTaskGraph(intent: IntentIR): TaskGraph {
     family: intent.family,
     stages,
     inputs: intent.inputs,
-    goal: intent.goal
+    goal: intent.goal,
+    capabilityMatch
   };
 }

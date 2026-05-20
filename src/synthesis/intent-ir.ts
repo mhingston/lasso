@@ -19,6 +19,7 @@ export interface IntentIR {
   humanCheckpoints: string[];
   verificationTargets: string[];
   steps?: IntentStep[];
+  capabilities?: string[];
 }
 
 export interface UnsupportedIntentRejection {

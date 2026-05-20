@@ -223,10 +223,17 @@ describe("versioning/FileLineageStore", () => {
           },
         ],
         metrics: { retries: 2, durationMs: 1234 },
-        trace: [
-          { nodeId: "start", source: { specNodeId: "start", specNodeKind: "tool", specPath: "graph.nodes[0]" }, phase: "enter" },
-          { nodeId: "start", source: { specNodeId: "start", specNodeKind: "tool", specPath: "graph.nodes[0]" }, phase: "success" },
-        ],
+        trace: {
+          entries: [
+            { nodeId: "start", source: { specNodeId: "start", specNodeKind: "tool", specPath: "graph.nodes[0]" }, phase: "enter", startedAt: 1000 },
+            { nodeId: "start", source: { specNodeId: "start", specNodeKind: "tool", specPath: "graph.nodes[0]" }, phase: "success", completedAt: 1050 },
+          ],
+          totalDurationMs: 50,
+          nodeCount: 1,
+          failureCount: 0,
+          startTimeMs: 1000,
+          endTimeMs: 1050,
+        },
         completedAt: 5000,
       };
 

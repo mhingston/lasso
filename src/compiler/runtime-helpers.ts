@@ -19,6 +19,10 @@ export interface ExecutionTraceEntry {
   source: CirNode["source"];
   phase: TracePhase;
   details?: Record<string, unknown>;
+  startedAt?: number;
+  completedAt?: number;
+  inputSnapshot?: unknown;
+  outputSnapshot?: unknown;
 }
 
 export interface ExecutionState {
@@ -182,12 +186,18 @@ export function recordTrace(
   node: CirNode,
   phase: TracePhase,
   details?: Record<string, unknown>,
+  inputSnapshot?: unknown,
+  outputSnapshot?: unknown,
 ): void {
   const entry: ExecutionTraceEntry = {
     nodeId: node.id,
     source: node.source,
     phase,
     ...(details ? { details } : {}),
+    ...(phase === "enter" ? { startedAt: Date.now() } : {}),
+    ...(phase === "success" || phase === "failure" ? { completedAt: Date.now() } : {}),
+    ...(inputSnapshot !== undefined ? { inputSnapshot: capSnapshot(inputSnapshot) } : {}),
+    ...(outputSnapshot !== undefined ? { outputSnapshot: capSnapshot(outputSnapshot) } : {}),
   };
 
   state.trace.push(entry);
@@ -210,6 +220,16 @@ export function recordTrace(
       ctx.traceDebug(message);
       break;
   }
+}
+
+const MAX_SNAPSHOT_BYTES = 1024;
+
+function capSnapshot(value: unknown): unknown {
+  const json = JSON.stringify(value);
+  if (json.length <= MAX_SNAPSHOT_BYTES) {
+    return value;
+  }
+  return json.slice(0, MAX_SNAPSHOT_BYTES) + "…(truncated)";
 }
 
 export function* runWithRetry<T>(

@@ -227,6 +227,9 @@ export interface RetryPolicy {
 export interface VerificationPolicy {
   /** Verification rules */
   rules: VerificationRule[];
+
+  /** Verification strategy */
+  strategy?: "all-must-pass" | "first-pass" | "any-block";
 }
 
 export type VerificationRule =

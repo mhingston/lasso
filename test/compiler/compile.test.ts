@@ -469,12 +469,19 @@ describe("compileHarnessSpec", () => {
       outputs: {
         "run-diff": { stdout: "diff output" }
       },
-      trace: expect.arrayContaining([
-        expect.objectContaining({
-          nodeId: "run-diff",
-          phase: "enter"
-        })
-      ])
+      trace: expect.objectContaining({
+        entries: expect.arrayContaining([
+          expect.objectContaining({
+            nodeId: "run-diff",
+            phase: "enter"
+          })
+        ]),
+        totalDurationMs: expect.any(Number),
+        nodeCount: expect.any(Number),
+        failureCount: 0,
+        startTimeMs: expect.any(Number),
+        endTimeMs: expect.any(Number),
+      })
     });
     
     expect(completed.value.harnessState).toBeDefined();

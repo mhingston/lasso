@@ -17,7 +17,7 @@ export type { IntentIR, IntentParseResult, SupportedWorkflowFamily } from "./syn
 export type { TaskGraph as SynthesisTaskGraph, WorkflowStage } from "./synthesis/graph-builder.js";
 export type { RiskModel, StageRisk } from "./synthesis/risk-analyzer.js";
 export type { PolicyBundle, PolicyResult } from "./synthesis/policy-builder.js";
-export type { HarnessVersion, LineageEntry } from "./versioning/types.js";
+export type { HarnessVersion, LineageEntry, HarnessExecutionTrace } from "./versioning/types.js";
 export type { LineageStore, LineageFilter } from "./versioning/store.js";
 export { FileLineageStore } from "./versioning/file-store.js";
 export type { AdaptiveRuntimeMetadata, AdaptiveRuntimeInput, RuntimeReplanDecision } from "./replanner/runtime.js";

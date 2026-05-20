@@ -4,8 +4,9 @@ import { buildTaskGraph } from "../synthesis/graph-builder.js";
 import { analyzeRisks } from "../synthesis/risk-analyzer.js";
 import { synthesizePolicy } from "../synthesis/policy-builder.js";
 import type { PlannerResult } from "./types.js";
+import type { CapabilityRegistry } from "../capabilities/types.js";
 
-export function planWorkflowRequest(brief: string): PlannerResult {
+export function planWorkflowRequest(brief: string, registry?: CapabilityRegistry): PlannerResult {
   // Reject empty briefs
   if (!brief || brief.trim().length === 0) {
     return {
@@ -40,10 +41,10 @@ export function planWorkflowRequest(brief: string): PlannerResult {
   const intent = parseResult.intent;
   
   // Build task graph from intent
-  const graph = buildTaskGraph(intent);
+  const graph = buildTaskGraph(intent, registry);
   
   // Analyze risks
-  const risks = analyzeRisks(graph);
+  const risks = analyzeRisks(graph, registry);
   
   // Synthesize policy
   const policyResult = synthesizePolicy(graph, risks);

@@ -3,7 +3,10 @@ import type { HarnessSpec } from "../spec/types.js";
 import { buildReferenceHarnessSpec, type ReferenceWorkflowRequest } from "../reference/catalog.js";
 import { replanWorkflowRequest, type ReplanRequest, type ReplanResult } from "./synthesize.js";
 import { createInitialVersion, createNextVersion, createLineageEntry } from "../versioning/history.js";
-import type { HarnessVersion, LineageEntry } from "../versioning/types.js";
+import type { HarnessVersion, LineageEntry, HarnessExecutionTrace } from "../versioning/types.js";
+import { deriveMutationsFromTrace } from "../mutation/derive.js";
+import { mutateHarness } from "../mutation/engine.js";
+import type { HarnessMutation, MutationResult } from "../mutation/types.js";
 
 export const MAX_ADAPTIVE_VERSIONS = 5;
 
@@ -11,6 +14,7 @@ export interface AdaptiveRuntimeMetadata {
   currentRequest: ReferenceWorkflowRequest;
   currentVersion: HarnessVersion;
   lineage: LineageEntry[];
+  pendingMutations?: HarnessMutation[];
 }
 
 export interface AdaptiveRuntimeInput {
@@ -105,12 +109,26 @@ export function prepareRuntimeReplan(
 
   const replanResult = replanWorkflowRequest(replanRequest);
 
+  const mutationDecision = prepareRuntimeReplanWithMutations(adaptive, result, {
+    entries: result.trace.entries,
+    totalDurationMs: result.harnessState.metrics.durationMs,
+    nodeCount: result.trace.entries.length,
+    failureCount: result.harnessState.failures.length,
+    startTimeMs: Date.now() - result.harnessState.metrics.durationMs,
+    endTimeMs: Date.now(),
+  });
+
   if (replanResult.status === "draft_request") {
-    const nextSpec = buildReferenceHarnessSpec(replanResult.request);
+    const baseSpec = mutationDecision.mutationResult
+      ? mutationDecision.mutationResult.spec
+      : buildReferenceHarnessSpec(replanResult.request);
+    const mutationSuffix = mutationDecision.mutations
+      ? ` + ${mutationDecision.mutations.length} structural mutation(s)`
+      : "";
     const nextVersion = createNextVersion(
       adaptive.currentVersion,
-      nextSpec,
-      `${replanResult.trigger}: ${replanResult.rationale[0] || "workflow evolution"}`,
+      baseSpec,
+      `${replanResult.trigger}: ${replanResult.rationale[0] || "workflow evolution"}${mutationSuffix}`,
     );
 
     const nextInput: AdaptiveRuntimeInput = {
@@ -119,6 +137,7 @@ export function prepareRuntimeReplan(
         currentRequest: structuredClone(replanResult.request),
         currentVersion: nextVersion,
         lineage: [...adaptive.lineage, lineageEntry],
+        pendingMutations: mutationDecision.mutations,
       },
     };
 
@@ -143,6 +162,33 @@ export function prepareRuntimeReplan(
     decision: "stop",
     lineageEntry,
     replanResult,
+  };
+}
+
+export interface MutationReplanDecision {
+  decision: "mutate_spec" | "no_mutations";
+  mutationResult?: MutationResult;
+  mutations?: HarnessMutation[];
+}
+
+export function prepareRuntimeReplanWithMutations(
+  adaptive: AdaptiveRuntimeMetadata,
+  result: CompiledHarnessResult,
+  trace: HarnessExecutionTrace,
+): MutationReplanDecision {
+  const currentSpec = adaptive.currentVersion.spec;
+  const derivedMutations = deriveMutationsFromTrace(trace, currentSpec);
+
+  if (derivedMutations.length === 0) {
+    return { decision: "no_mutations" };
+  }
+
+  const mutationResult = mutateHarness(currentSpec, derivedMutations);
+
+  return {
+    decision: "mutate_spec",
+    mutationResult,
+    mutations: derivedMutations,
   };
 }
 

@@ -2,6 +2,7 @@ import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { registerWorkflow, type RegisteredWorkflow, type WorkflowContext, type WorkflowOptions, type YieldItem } from "pi-duroxide";
 import type { CirMergeNode, CirNode, CirTransition, CirWorkflow } from "../cir/types.js";
 import { lowerHarnessSpecToCir } from "../cir/lower.js";
+import { optimizeCirWorkflow } from "../cir/optimize.js";
 import { validateCirWorkflow } from "../cir/validate.js";
 import type { HarnessSpec } from "../spec/types.js";
 import { validateHarnessSpec } from "../spec/validate.js";
@@ -10,15 +11,14 @@ import type { HarnessState } from "../state/types.js";
 import {
   buildShellCommand,
   evaluateConditionExpression,
-  interpretVerificationResult,
   recordTrace,
   runWithRetry,
   type ExecutionState,
-  type ExecutionTraceEntry,
-  type VerificationOutcome,
 } from "./runtime-helpers.js";
+import { runVerification } from "../verification/engine.js";
 import { unwrapAdaptiveInput, prepareRuntimeReplan, type AdaptiveRuntimeMetadata } from "../replanner/runtime.js";
 import type { LineageEntry } from "../versioning/types.js";
+import type { HarnessExecutionTrace } from "../versioning/types.js";
 import { buildReferenceHarnessSpec } from "../reference/catalog.js";
 
 export interface CompiledHarnessResult {
@@ -26,7 +26,7 @@ export interface CompiledHarnessResult {
   terminalNodeId: string;
   result: unknown;
   outputs: Record<string, unknown>;
-  trace: ExecutionTraceEntry[];
+  trace: HarnessExecutionTrace;
   harnessState: HarnessState;
   adaptiveMetadata?: AdaptiveRuntimeMetadata;
   lineage?: LineageEntry[];
@@ -37,6 +37,7 @@ export interface CompiledHarnessWorkflow {
   spec: HarnessSpec;
   cir: CirWorkflow;
   workflows: RegisteredWorkflow[];
+  optimizations?: string[];
   adaptive?: {
     currentVersion: { version: number; parentVersion?: number; reason: string };
     lineage: LineageEntry[];
@@ -56,13 +57,14 @@ export function compileHarnessSpec(spec: HarnessSpec): CompiledHarnessWorkflow {
   }
 
   const cir = lowerHarnessSpecToCir(spec);
-  const cirValidation = validateCirWorkflow(cir);
+  const { optimized: optimizedCir, passes: optimizationPasses } = optimizeCirWorkflow(cir);
+  const cirValidation = validateCirWorkflow(optimizedCir);
   if (!cirValidation.valid) {
     throw new Error(`CIR validation failed:\n- ${cirValidation.errors.join("\n- ")}`);
   }
 
   const compiledSpec = structuredClone(spec);
-  const compiledCir = structuredClone(cir);
+  const compiledCir = structuredClone(optimizedCir);
   const nodeMap = new Map(compiledCir.nodes.map(node => [node.id, node]));
   const outgoingTransitions = buildTransitionMap(compiledCir.transitions);
   const incomingTransitions = buildIncomingTransitionMap(compiledCir.transitions);
@@ -86,6 +88,7 @@ export function compileHarnessSpec(spec: HarnessSpec): CompiledHarnessWorkflow {
     spec: compiledSpec,
     cir: compiledCir,
     workflows,
+    optimizations: optimizationPasses.length > 0 ? optimizationPasses : undefined,
     register(_pi?: ExtensionAPI) {
       for (const workflow of workflows) {
         registerWorkflow(workflow.name, workflow.generator, workflow.options);
@@ -420,135 +423,48 @@ function* executeNodeWithPolicies(
     });
 
     state.outputs[node.id] = output;
-    const verificationOutcome = yield* executeVerificationHooks(ctx, state, node, nodeMap, workflowName);
+    const verificationReport = yield* runVerification(node.id, node.verification ?? [], nodeMap, state, ctx);
 
-    if (verificationOutcome.status === "pass" || verificationOutcome.status === "warn") {
+    if (verificationReport.overallStatus === "pass") {
       return output;
     }
 
-    if (verificationOutcome.status === "block") {
-      // Record verification failure to harnessState
+    if (verificationReport.overallStatus === "block") {
+      const retryResult = verificationReport.hookResults.find(r => r.outcome.status === "retry");
+      if (retryResult && retryResult.outcome.status === "retry") {
+        const retryCount = verificationRetryCounts.get(retryResult.hook.checkNodeId) ?? 0;
+        if (retryCount + 1 < retryResult.outcome.maxAttempts) {
+          verificationRetryCounts.set(retryResult.hook.checkNodeId, retryCount + 1);
+          recordTrace(ctx, state, node, "retry", {
+            reason: "verification",
+            hook: retryResult.hook.checkNodeId,
+            attemptNumber: retryCount + 2,
+          });
+          continue;
+        }
+        const exhaustionMessage = `Verification retry exhausted for node ${node.id} via ${retryResult.hook.checkNodeId}`;
+        addFailure(state.harnessState, {
+          domainType: "lasso",
+          rootCause: "verification_failed",
+          nodeId: node.id,
+          message: exhaustionMessage,
+        });
+        throw new Error(exhaustionMessage);
+      }
+
+      const blockResult = verificationReport.hookResults.find(r => r.outcome.status === "block");
+      const message = blockResult?.outcome.status === "block"
+        ? blockResult.outcome.message
+        : `Verification failed for node ${node.id}`;
       addFailure(state.harnessState, {
         domainType: "lasso",
         rootCause: "verification_failed",
         nodeId: node.id,
-        message: verificationOutcome.message,
+        message,
       });
-      throw new Error(verificationOutcome.message);
+      throw new Error(message);
     }
-
-    const retryCount = verificationRetryCounts.get(verificationOutcome.hook.checkNodeId) ?? 0;
-    if (retryCount + 1 >= verificationOutcome.maxAttempts) {
-      const exhaustionMessage = `Verification retry exhausted for node ${node.id} via ${verificationOutcome.hook.checkNodeId}`;
-      // Record verification failure to harnessState
-      addFailure(state.harnessState, {
-        domainType: "lasso",
-        rootCause: "verification_failed",
-        nodeId: node.id,
-        message: exhaustionMessage,
-      });
-      throw new Error(exhaustionMessage);
-    }
-
-    verificationRetryCounts.set(verificationOutcome.hook.checkNodeId, retryCount + 1);
-    recordTrace(ctx, state, node, "retry", {
-      reason: "verification",
-      hook: verificationOutcome.hook.checkNodeId,
-      attemptNumber: retryCount + 2,
-    });
   }
-}
-
-function* executeVerificationHooks(
-  ctx: WorkflowContext,
-  state: ExecutionState,
-  node: Exclude<CirNode, { kind: "condition" | "merge" }>,
-  nodeMap: Map<string, CirNode>,
-  workflowName: string,
-): Generator<YieldItem, VerificationOutcome, unknown> {
-  if (!node.verification || node.verification.length === 0) {
-    return { status: "pass" };
-  }
-
-  for (const hook of node.verification) {
-    const verifierNode = getNode(nodeMap, hook.checkNodeId);
-    
-    let verifierOutput: unknown;
-    
-    // Handle expression verification specially
-    if (hook.kind === "expression") {
-      if (verifierNode.kind !== "condition") {
-        throw new Error(`Expression verification ${hook.checkNodeId} must reference a condition node`);
-      }
-      
-      recordTrace(ctx, state, verifierNode, "enter", {
-        verificationFor: node.id,
-        verificationType: "expression",
-      });
-      
-      // Evaluate the condition expression directly
-      const expressionResult = evaluateConditionExpression(verifierNode.action.conditionExpr, state);
-      verifierOutput = expressionResult;
-      
-      // Record the expression evaluation result
-      state.outputs[verifierNode.id] = { 
-        evaluated: true, 
-        result: expressionResult,
-        expression: verifierNode.action.conditionExpr,
-      };
-      
-      recordTrace(ctx, state, verifierNode, "success", {
-        verificationFor: node.id,
-        verificationType: "expression",
-        result: expressionResult,
-      });
-    } else {
-      // Handle tool/llm verification
-      if (verifierNode.kind === "condition" || verifierNode.kind === "merge") {
-        throw new Error(`Verification node ${verifierNode.id} is not directly executable`);
-      }
-
-      verifierOutput = yield* runWithRetry(ctx, state, verifierNode, function* () {
-        recordTrace(ctx, state, verifierNode, "enter", {
-          verificationFor: node.id,
-          verificationType: hook.kind,
-        });
-        const result = yield createActionYieldItem(ctx, verifierNode, workflowName);
-        recordTrace(ctx, state, verifierNode, "success", {
-          verificationFor: node.id,
-          verificationType: hook.kind,
-        });
-        return result;
-      });
-      state.outputs[verifierNode.id] = verifierOutput;
-    }
-
-    const outcome = interpretVerificationResult(hook, verifierOutput);
-    if (outcome.status === "pass") {
-      recordTrace(ctx, state, node, "verification-pass", {
-        checkNodeId: hook.checkNodeId,
-        verificationType: hook.kind,
-      });
-      continue;
-    }
-
-    if (outcome.status === "warn") {
-      recordTrace(ctx, state, node, "verification-fail", {
-        checkNodeId: hook.checkNodeId,
-        verificationType: hook.kind,
-        warning: true,
-      });
-      continue;
-    }
-
-    recordTrace(ctx, state, node, "verification-fail", {
-      checkNodeId: hook.checkNodeId,
-      verificationType: hook.kind,
-    });
-    return outcome;
-  }
-
-  return { status: "pass" };
 }
 
 function createActionYieldItem(
@@ -610,12 +526,21 @@ function buildCompletedResult(
     recordNodeResult(state.harnessState, nodeId, output);
   }
 
+  const trace: HarnessExecutionTrace = {
+    entries: structuredClone(state.trace),
+    totalDurationMs: durationMs,
+    nodeCount: new Set(state.trace.map(e => e.nodeId)).size,
+    failureCount: state.trace.filter(e => e.phase === "failure").length,
+    startTimeMs: state.startTimeMs,
+    endTimeMs,
+  };
+
   const result: CompiledHarnessResult = {
     status: "completed",
     terminalNodeId,
     result: structuredClone(state.outputs[terminalNodeId]),
     outputs: structuredClone(state.outputs),
-    trace: structuredClone(state.trace),
+    trace,
     harnessState: state.harnessState,
   };
 

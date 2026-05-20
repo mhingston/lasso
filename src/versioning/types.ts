@@ -10,6 +10,15 @@ export interface HarnessVersion {
   generatedAt: number;
 }
 
+export interface HarnessExecutionTrace {
+  entries: ExecutionTraceEntry[];
+  totalDurationMs: number;
+  nodeCount: number;
+  failureCount: number;
+  startTimeMs: number;
+  endTimeMs: number;
+}
+
 export interface LineageEntry {
   version: number;
   terminalNodeId: string;
@@ -17,6 +26,6 @@ export interface LineageEntry {
   nodeResults: Record<string, unknown>;
   failures: HarnessState["failures"];
   metrics: HarnessState["metrics"];
-  trace: ExecutionTraceEntry[];
+  trace: HarnessExecutionTrace;
   completedAt: number;
 }

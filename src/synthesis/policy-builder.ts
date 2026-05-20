@@ -25,6 +25,38 @@ export function synthesizePolicy(graph: TaskGraph, risks: RiskModel): PolicyResu
   }
   
   const hasSteps = graph.stages.some(s => s.id.startsWith("step-"));
+  const hasCapabilities = graph.capabilityMatch !== undefined;
+  
+  if (hasCapabilities) {
+    rationale.push(
+      `Capability-driven workflow: ${graph.family}`,
+      `Matched capabilities: ${graph.capabilityMatch!.matched.join(", ") || "none"}`,
+      `Risk level: ${risks.overallRisk}`
+    );
+    
+    if (graph.capabilityMatch!.missing.length > 0) {
+      warnings.push(`Missing capabilities: ${graph.capabilityMatch!.missing.join(", ")}`);
+    }
+    
+    if (risks.capabilityRisk) {
+      for (const factor of risks.capabilityRisk.riskFactors) {
+        warnings.push(`Risk: ${factor}`);
+      }
+    }
+    
+    const bundle: Record<string, unknown> = { ...graph.inputs };
+    
+    return {
+      success: true,
+      policy: {
+        workflow: graph.family,
+        bundle,
+        rationale,
+        warnings,
+        missingFields: []
+      }
+    };
+  }
   
   if (hasSteps) {
     rationale.push(
