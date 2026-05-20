@@ -4,8 +4,39 @@
   <img src="docs/agent-wrangling.png" width="320" alt="Agent Wrangling" />
 </p>
 
-Lasso is a dynamic harness engine built on `pi-duroxide`. It goes from intent to
-executable workflow — and repairs the harness while it runs.
+## Table of contents
+
+- [What is Lasso?](#what-is-lasso)
+- [Why Lasso exists](#why-lasso-exists)
+- [What Lasso does](#what-lasso-does)
+- [How it works](#how-it-works)
+- [Slash commands](#slash-commands)
+- [Bundled workflows](#bundled-workflows)
+- [Request examples](#request-examples)
+- [Custom workflows](#custom-workflows)
+- [HarnessSpec reference](#harnessspec-reference)
+- [Library API](#library-api)
+  - [Compiler](#compiler)
+  - [Compiler feedback](#compiler-feedback)
+  - [Verification engine](#verification-engine)
+  - [Compiler optimizations](#compiler-optimizations)
+  - [Harness mutations](#harness-mutations)
+  - [Guardrails](#guardrails)
+  - [Failure mode generation](#failure-mode-generation)
+  - [Adaptive runtime](#adaptive-runtime)
+  - [Lineage persistence](#lineage-persistence)
+  - [Harness memory](#harness-memory)
+  - [Environment model](#environment-model)
+  - [Failure ontology](#failure-ontology)
+  - [Capabilities](#capabilities)
+  - [Meta-harness](#meta-harness)
+  - [Multi-harness composition](#multi-harness-composition)
+- [How Lasso fits with pi-duroxide](#how-lasso-fits-with-pi-duroxide)
+- [Non-goals](#non-goals)
+
+---
+
+Lasso goes from intent to executable workflow — and repairs the harness while it runs.
 
 ```text
 Intent
@@ -18,15 +49,12 @@ Intent
   → Runtime adaptation (trace → mutate → continueAsNew)
 ```
 
-If `pi-duroxide` is the durable runtime engine, **Lasso is the layer that
-generates, optimizes, and repairs the harnesses that run on it**.
-
 ## What is Lasso?
 
-Lasso is a **pi coding agent extension** — a TypeScript package that plugs into
+Lasso is a **dynamic harness engine** built on [pi-duroxide](https://github.com/mhingston/pi-duroxide). It's a TypeScript package that plugs into
 pi via the `pi` field in `package.json`. When installed, it:
 
-1. Boots `pi-duroxide` (the durable workflow runtime)
+1. Boots [pi-duroxide](https://github.com/mhingston/pi-duroxide) (the durable workflow runtime)
 2. Registers 5 slash commands (`/lasso:plan`, `/lasso:run`, etc.)
 3. Exports a library API for programmatic use
 
@@ -75,41 +103,11 @@ const signature = classifyFailure(error, { nodeId: "deploy" });
 > target repo. Use a throwaway clone or disposable worktree, not your primary
 > checkout.
 
-## Table of contents
-
-- [What is Lasso?](#what-is-lasso)
-- [Why Lasso exists](#why-lasso-exists)
-- [What Lasso does](#what-lasso-does)
-- [How it works](#how-it-works)
-- [Slash commands](#slash-commands)
-- [Bundled workflows](#bundled-workflows)
-- [Request examples](#request-examples)
-- [Custom workflows](#custom-workflows)
-- [HarnessSpec reference](#harnessspec-reference)
-- [Library API](#library-api)
-  - [Compiler](#compiler)
-  - [Compiler feedback](#compiler-feedback)
-  - [Verification engine](#verification-engine)
-  - [Compiler optimizations](#compiler-optimizations)
-  - [Harness mutations](#harness-mutations)
-  - [Guardrails](#guardrails)
-  - [Failure mode generation](#failure-mode-generation)
-  - [Adaptive runtime](#adaptive-runtime)
-  - [Lineage persistence](#lineage-persistence)
-  - [Harness memory](#harness-memory)
-  - [Environment model](#environment-model)
-  - [Failure ontology](#failure-ontology)
-  - [Capabilities](#capabilities)
-  - [Meta-harness](#meta-harness)
-  - [Multi-harness composition](#multi-harness-composition)
-- [How Lasso fits with pi-duroxide](#how-lasso-fits-with-pi-duroxide)
-- [Non-goals](#non-goals)
-
 ---
 
 ## Why Lasso exists
 
-`pi-duroxide` gives you a durable workflow runtime. That is the right layer when
+[pi-duroxide](https://github.com/mhingston/pi-duroxide) gives you a durable workflow runtime. That is the right layer when
 you already know what workflow you want to run.
 
 Lasso sits one level higher. It:
@@ -134,7 +132,7 @@ Use Lasso when you want workflow automation that is:
 
 Lasso takes a declarative `HarnessSpec`, validates it, lowers it to CIR,
 optimizes it, and compiles it into a replay-safe workflow that runs on
-`pi-duroxide`.
+[pi-duroxide](https://github.com/mhingston/pi-duroxide).
 
 Out of the box, it ships with:
 
@@ -685,15 +683,15 @@ Lasso is distributed as a **pi extension** (`package.json` has a `"pi"` field
 pointing to `./src/index.ts`). When you `pi install` it:
 
 1. pi loads `src/index.ts`, which exports a default extension function
-2. That function (`src/pi/extension.ts`) first boots `pi-duroxide`
+2. That function (`src/pi/extension.ts`) first boots [pi-duroxide](https://github.com/mhingston/pi-duroxide)
 3. Then it registers the 5 slash commands with pi's `ExtensionAPI`
 
 The layering:
 
-- `pi-duroxide` owns workflow lifecycle, replay, timers, events, and runtime registration
+- [pi-duroxide](https://github.com/mhingston/pi-duroxide) owns workflow lifecycle, replay, timers, events, and runtime registration
 - Lasso owns spec validation, CIR lowering, optimization, compilation, and operator-facing commands
 
-In other words: `pi-duroxide` is the durable runtime engine; Lasso is the
+In other words: [pi-duroxide](https://github.com/mhingston/pi-duroxide) is the durable runtime engine; Lasso is the
 harness generation, optimization, and adaptation layer built on top of it.
 
 ## Non-goals

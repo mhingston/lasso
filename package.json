@@ -1,7 +1,7 @@
 {
   "name": "@mhingston5/lasso",
   "description": "Lasso is a local-first workflow compiler for pi-duroxide.",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "author": "Mark Hingston",
   "repository": "https://github.com/mhingston/lasso",
   "license": "MIT",
