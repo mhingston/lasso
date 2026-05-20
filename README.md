@@ -1,86 +1,156 @@
 # Lasso
 
-Lasso is a workflow compiler layered on top of `pi-duroxide`. It validates a declarative `HarnessSpec`, lowers it to CIR, compiles it into replay-safe workflows, and exposes a thin pi adapter for plan/replan/compile/run/inspect operations.
+Lasso is a local-first workflow compiler for pi. It sits on top of
+`pi-duroxide` and gives you two things:
 
-## Standalone repository
+1. a compiler pipeline for turning a declarative `HarnessSpec` into a replay-safe durable workflow
+2. bundled local workflows and slash commands for common repository automation tasks
 
-Lasso is now its own repository. `pi-duroxide` is a dependency, not a sibling package.
+Today, the built-in command surface focuses on **local validation and local merge flows**.
+The underlying compiler API is broader.
 
-- `pi-duroxide` owns workflow lifecycle, replay, timers, events, and runtime registration
-- Lasso owns spec validation, CIR lowering, compilation, reference workflow construction, and operator-facing commands
+## Quick Start
 
-Roadmap work continues here in the standalone `lasso` repository.
+Run Lasso directly from this repository:
 
-### Published dependency
+```bash
+pi -e ./src/index.ts
+```
 
-Lasso now consumes the published `pi-duroxide` npm package instead of a local worktree bridge. Local development and test runs in this repository no longer depend on a sibling checkout path.
+Or install it into pi:
 
-## Reference workflows
+```bash
+pi install .
+```
 
-Lasso ships two reference workflows. Both operate entirely against a local repository or worktree — no live GitHub APIs are called.
+Then, inside pi:
+
+1. Work against a **disposable repo or worktree**.
+2. Use `/lasso:plan <brief>` to draft a request for a bundled workflow.
+3. Review the generated JSON, then pass it into `/lasso:compile` or `/lasso:run`.
+4. Use `/lasso:inspect` to inspect the compiled spec, CIR, and runtime state.
+
+> **Safety:** Lasso checks out refs, applies patches, and merges branches in the
+> target repo. Use a throwaway clone or disposable worktree, not your primary
+> checkout.
+
+---
+
+## Table of Contents
+
+- [What Lasso does](#what-lasso-does)
+- [When to use Lasso](#when-to-use-lasso)
+- [Does it work with any workflow?](#does-it-work-with-any-workflow)
+- [Bundled workflows](#bundled-workflows)
+- [Slash commands](#slash-commands)
+- [Request examples](#request-examples)
+- [Custom workflows (advanced)](#custom-workflows-advanced)
+- [How Lasso fits with pi-duroxide](#how-lasso-fits-with-pi-duroxide)
+- [Non-goals](#non-goals)
+
+---
+
+## What Lasso does
+
+Lasso takes a declarative `HarnessSpec`, validates it, lowers it to CIR, and
+compiles it into a replay-safe workflow that runs on `pi-duroxide`.
+
+Out of the box, it also ships with operator-ready local workflows and commands:
+
+- `patch-validation` — validate a known fix against a known-bad baseline
+- `pr-review-merge` — simulate review, approval, merge, and post-merge checks locally
+- `/lasso:plan` — draft one of those workflows from a freeform brief
+- `/lasso:replan` — revise a prior request after a concrete outcome
+
+The current emphasis is **local, deterministic, reviewable automation** rather
+than fully autonomous hosted integrations.
+
+## When to use Lasso
+
+| Goal | Fit | Notes |
+| --- | --- | --- |
+| Validate an existing patch or branch locally | Excellent fit | Use `patch-validation` |
+| Simulate a local PR review + merge flow | Excellent fit | Use `pr-review-merge` |
+| Compile your own workflow from code | Good fit | Use the compiler API |
+| Run live GitHub PR automation | Not yet | Lasso is local-only today |
+| Ask Lasso to invent arbitrary new workflows from natural language | Not yet | Planner/replanner only understand bundled workflows |
+
+## Does it work with any workflow?
+
+**Short answer:** not from the built-in slash commands, but yes at the compiler
+layer.
+
+Lasso currently has two distinct surfaces:
+
+| Surface | Scope today |
+| --- | --- |
+| `/lasso:plan`, `/lasso:replan`, `/lasso:compile`, `/lasso:run` | Only the bundled `patch-validation` and `pr-review-merge` workflows |
+| `validateHarnessSpec`, `lowerHarnessSpecToCir`, `compileHarnessSpec` | Any workflow you can express as a valid `HarnessSpec` |
+
+So if you are asking, **"Can I point the current README commands at any random
+workflow shape?"** — no, not today.
+
+If you are asking, **"Can Lasso compile more than the two examples in this
+repo?"** — yes. The package exports the generic spec/validation/lowering/compiler
+surface for custom workflows. What is still narrow is the operator-facing
+request catalog and the planner/replanner logic.
+
+## Bundled workflows
+
+Lasso ships two bundled workflows. Both operate entirely against a **local**
+repository or worktree.
 
 ### `patch-validation`
 
-Validates a pre-existing candidate fix against a known-bad baseline. The workflow **does not author code**; it receives a fix that already exists (as a branch or a patch file) and runs a structured gate:
+Use this when you already have a candidate fix and want Lasso to verify it.
+Lasso does **not** write the fix for you. It runs a structured gate:
 
-1. Checks out `baselineRef` and runs `reproduceCommands` — expects them to fail, confirming the bug is present.
-2. Applies the candidate from `candidateSource`.
-3. Re-runs `reproduceCommands` — expects them to pass now.
-4. Runs `verificationCommands` as a regression guard.
-5. Optionally produces an LLM summary and routes to a human approval gate when `approvalRequired` is `true`.
+1. Check out `baselineRef` and run `reproduceCommands` to confirm the bug exists.
+2. Apply the candidate from `candidateSource`.
+3. Re-run `reproduceCommands` and expect them to pass.
+4. Run `verificationCommands` as a broader regression check.
+5. Optionally generate a summary and route to human approval.
 
-Terminal outcomes: `validated-fix`, `not-reproduced`, `apply-failed`, `candidate-failed`, `rejected`.
+Terminal outcomes:
 
-### `pr-review-merge` (legacy)
+- `validated-fix`
+- `not-reproduced`
+- `apply-failed`
+- `candidate-failed`
+- `rejected`
 
-The original simulated PR review + merge flow. It uses tool nodes to inspect the repo, run verification commands, and perform a local merge, with an LLM review node, a human approval gate, and retry behavior after merge.
+### `pr-review-merge`
 
-## Pi adapter commands
+Use this when you want a local rehearsal of a review-and-merge flow. The
+workflow inspects the repo, runs verification commands, generates an LLM review
+summary, routes through a human approval gate, performs a local merge, and can
+re-run verification after the merge.
 
-When the Lasso extension is loaded, it first boots the underlying `pi-duroxide` workflow extension and then adds five slash commands:
+This is useful when you want **the workflow shape of a PR automation** without
+live GitHub integration.
 
-- `/lasso:plan <freeform brief>`
-- `/lasso:replan <replan request JSON>`
-- `/lasso:compile <workflow request JSON>`
-- `/lasso:run <workflow request JSON>`
-- `/lasso:inspect [workflow-name]`
+## Slash commands
 
-`plan` is a deterministic drafting step. It classifies a freeform brief into either `patch-validation` or `pr-review-merge` and returns one of two outcomes:
+When the Lasso extension is loaded, it first boots `pi-duroxide` and then adds
+these commands:
 
-1. a draft workflow request JSON envelope you can pass into `compile` or `run`
-2. a clarification result with missing fields and concrete next-step guidance
-
-`plan` does **not** compile, register, or run anything in v1.
-
-`compile` builds the reference `HarnessSpec`, validates it, lowers it to CIR, and stores the compiled artifact in memory.
-
-`run` compiles the same reference workflow, registers it with `pi-duroxide`, and starts an orchestration instance.
-
-`inspect` shows the compiled spec, the lowered CIR, and the current workflow instances reported by the durable runtime.
+| Command | Use it when | What it does |
+| --- | --- | --- |
+| `/lasso:plan <freeform brief>` | You have an English brief and want a draft request | Returns a draft JSON request or a clarification result |
+| `/lasso:replan <replan request JSON>` | You have a previous request plus a real outcome | Returns a revised draft, `needs_operator_input`, or `stop` |
+| `/lasso:compile <workflow request JSON>` | You want to inspect what Lasso will register | Builds the bundled reference spec, validates it, lowers it to CIR, and stores the compiled artifact in memory |
+| `/lasso:run <workflow request JSON>` | You want to execute a bundled workflow locally | Compiles, registers, and starts the workflow |
+| `/lasso:inspect [workflow-name]` | You want to inspect the latest or named compiled workflow | Shows the compiled spec, CIR, and runtime state |
 
 ### `/lasso:plan`
 
-The planner is intentionally rule-based and only supports the two built-in reference workflow families:
+The planner is deterministic and draft-only. It classifies a freeform brief into
+either `patch-validation` or `pr-review-merge` and returns:
 
-- `patch-validation`
-- `pr-review-merge`
+1. a draft workflow request JSON envelope you can pass into `compile` or `run`, or
+2. a clarification result with missing fields and concrete next-step guidance
 
-It does not guess missing required fields. If the brief does not clearly provide required values such as `repoPath`, branch names, `baselineRef`, `reviewInstructions`, or command lists, Lasso returns a clarification response instead of partial JSON.
-
-For a successful draft, the command output includes:
-
-1. the chosen workflow
-2. rationale bullets
-3. warnings, if any
-4. a fenced JSON block with the exact request envelope
-5. a hint to use `/lasso:compile` or `/lasso:run`
-
-For a clarification result, the command output includes:
-
-1. the likely workflow, if one exists
-2. reasons the planner stopped
-3. missing fields
-4. concrete guidance for what to add to the brief
+It does **not** compile, register, or run anything.
 
 ### `/lasso:replan`
 
@@ -89,23 +159,86 @@ The replanner is also deterministic and draft-only. It accepts:
 1. the original workflow request envelope, and
 2. a structured `observedOutcome` describing how that attempt behaved
 
-and returns one of three outcomes:
+It returns one of three outcomes:
 
 1. a revised draft request JSON envelope
-2. a `needs_operator_input` result when a human must provide new facts
-3. a `stop` result when auto-retrying would be wrong
+2. `needs_operator_input` when a human must provide new facts
+3. `stop` when auto-retrying would be the wrong move
 
-V1 supports both built-in workflow families:
+In v1, the replanner only supports the two bundled workflows. It never invents
+new branch names, candidate sources, or command lists.
 
-- `patch-validation`
-- `pr-review-merge`
+## Request examples
 
-It never guesses new branch names, candidate sources, or command lists. In v1,
-the only safe automatic mutation is escalating `patch-validation` from
-`approvalRequired: false` to `approvalRequired: true` when a previous successful
-attempt still carries explicit high-risk signals.
+Lasso commands accept either an explicit workflow envelope or the legacy raw
+`pr-review-merge` shorthand.
 
-Example replan input:
+### Preferred explicit envelope
+
+```json
+{
+  "workflow": "patch-validation",
+  "input": { "...": "..." }
+}
+```
+
+```json
+{
+  "workflow": "pr-review-merge",
+  "input": { "...": "..." }
+}
+```
+
+### `patch-validation`
+
+`repoPath` must point at a **disposable local repository or worktree**.
+
+```json
+{
+  "workflow": "patch-validation",
+  "input": {
+    "repoPath": "/absolute/path/to/disposable-worktree",
+    "baselineRef": "main",
+    "candidateSource": { "kind": "patchFile", "value": "/path/to/fix.patch" },
+    "reproduceCommands": ["npm test -- --grep 'the broken test'"],
+    "verificationCommands": ["npm test"],
+    "reviewInstructions": "Approve if the patch applies cleanly and verification passes.",
+    "approvalRequired": false
+  }
+}
+```
+
+### `pr-review-merge`
+
+The raw `LocalPrBundle` shape is still accepted and routes to
+`pr-review-merge`:
+
+```json
+{
+  "repoPath": "/absolute/path/to/disposable-worktree",
+  "sourceBranch": "feature/pr-change",
+  "targetBranch": "main",
+  "reviewInstructions": "Approve only if verification passes and the diff looks safe.",
+  "verificationCommands": ["node -e \"process.exit(0)\""]
+}
+```
+
+The explicit envelope form is also accepted:
+
+```json
+{
+  "workflow": "pr-review-merge",
+  "input": {
+    "repoPath": "/absolute/path/to/disposable-worktree",
+    "sourceBranch": "feature/pr-change",
+    "targetBranch": "main",
+    "reviewInstructions": "Approve only if verification passes and the diff looks safe.",
+    "verificationCommands": ["node -e \"process.exit(0)\""]
+  }
+}
+```
+
+### `replan`
 
 ```json
 {
@@ -133,112 +266,36 @@ For aborted attempts, provide `aborted: true` plus an explicit `abortReason`
 such as `setup-failure`, `retry-exhaustion`, `timeout`, `manual-stop`, or
 `unknown`.
 
-## Workflow request envelopes
+## Custom workflows (advanced)
 
-Commands accept either an explicit workflow envelope or the legacy `pr-review-merge` shorthand.
+If you need more than the two bundled workflows, use Lasso as a library.
 
-### Explicit envelope (preferred)
+The generic package surface is:
 
-```json
-{
-  "workflow": "patch-validation",
-  "input": { ... }
-}
-```
+- `HarnessSpec` types for authoring workflow specs
+- `validateHarnessSpec(...)` to validate a spec
+- `lowerHarnessSpecToCir(...)` to inspect the lowered internal workflow
+- `compileHarnessSpec(...)` to produce a replay-safe workflow for `pi-duroxide`
 
-```json
-{
-  "workflow": "pr-review-merge",
-  "input": { ... }
-}
-```
+That is the part of Lasso designed to work with **arbitrary workflow shapes**.
+What is still intentionally narrow is the built-in request catalog and the
+natural-language planning/replanning layer.
 
-### `patch-validation` input
+## How Lasso fits with pi-duroxide
 
-`repoPath` must point at a **disposable local repository or worktree**. The workflow checks out refs and applies patches in-place; run it against a dedicated fixture or throwaway clone, never your primary working tree.
+- `pi-duroxide` owns workflow lifecycle, replay, timers, events, and runtime registration
+- Lasso owns spec validation, CIR lowering, compilation, bundled local workflow construction, and operator-facing commands
 
-**Branch candidate example:**
-
-```json
-{
-  "workflow": "patch-validation",
-  "input": {
-    "repoPath": "/absolute/path/to/disposable-worktree",
-    "baselineRef": "main",
-    "candidateSource": { "kind": "branch", "value": "fix/bug" },
-    "reproduceCommands": ["npm test -- --grep 'the broken test'"],
-    "verificationCommands": ["npm test"],
-    "reviewInstructions": "Approve if the fix is minimal and all tests pass.",
-    "approvalRequired": true
-  }
-}
-```
-
-**Patch-file candidate example:**
-
-```json
-{
-  "workflow": "patch-validation",
-  "input": {
-    "repoPath": "/absolute/path/to/disposable-worktree",
-    "baselineRef": "main",
-    "candidateSource": { "kind": "patchFile", "value": "/path/to/fix.patch" },
-    "reproduceCommands": ["npm test -- --grep 'the broken test'"],
-    "verificationCommands": ["npm test"],
-    "reviewInstructions": "Approve if the patch applies cleanly and verification passes.",
-    "approvalRequired": false
-  }
-}
-```
-
-### `pr-review-merge` input (legacy shorthand)
-
-The raw `LocalPrBundle` shape is still accepted without an explicit envelope and routes to `pr-review-merge`:
-
-```json
-{
-  "repoPath": "/absolute/path/to/disposable-worktree",
-  "sourceBranch": "feature/pr-change",
-  "targetBranch": "main",
-  "reviewInstructions": "Approve only if verification passes and the diff looks safe.",
-  "verificationCommands": [
-    "node -e \"process.exit(0)\""
-  ]
-}
-```
-
-The explicit envelope form is also accepted:
-
-```json
-{
-  "workflow": "pr-review-merge",
-  "input": {
-    "repoPath": "/absolute/path/to/disposable-worktree",
-    "sourceBranch": "feature/pr-change",
-    "targetBranch": "main",
-    "reviewInstructions": "Approve only if verification passes and the diff looks safe.",
-    "verificationCommands": ["node -e \"process.exit(0)\""]
-  }
-}
-```
+In other words: `pi-duroxide` is the durable runtime engine; Lasso is a compiler
+and workflow package built on top of it.
 
 ## Non-goals
 
-The MVP does **not** include:
+Lasso does **not** currently aim to provide:
 
 - live GitHub or `gh` integration
-- autonomous code authoring or patch generation (the workflow validates a fix you already have)
-- LLM-backed planner synthesis
+- autonomous code authoring or patch generation
+- LLM-backed planning or replanning
 - automatic compile/run behavior from `/lasso:plan` or `/lasso:replan`
-- adaptive runtime mutation of already-running workflows
+- adaptive mutation of already-running workflows
 - arbitrary generated TypeScript
-
-## Package structure
-
-- `src/spec/` — public spec types, schema, and validator
-- `src/cir/` — internal execution contract and lowering
-- `src/compiler/` — replay-safe workflow compiler and runtime helpers
-- `src/planner/` — deterministic brief-to-request synthesis
-- `src/replanner/` — deterministic outcome-aware request revision
-- `src/reference/` — simulated/local PR review + merge reference workflow
-- `src/pi/` — thin pi adapter surface

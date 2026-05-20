@@ -15,7 +15,7 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
   const compileCommand: RegisteredCommand = {
     name: "lasso:compile",
     sourceInfo: extSourceInfo(),
-    description: "Compile the simulated/local PR review + merge reference workflow from a LocalPrBundle JSON payload.",
+    description: "Compile a bundled Lasso reference workflow from a workflow request JSON payload.",
     handler: async (args, ctx) => {
       try {
         const request = parseRequestArgs(args);
@@ -38,7 +38,7 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
   const runCommand: RegisteredCommand = {
     name: "lasso:run",
     sourceInfo: extSourceInfo(),
-    description: "Compile, register, and start the simulated/local PR review + merge workflow from a LocalPrBundle JSON payload.",
+    description: "Compile, register, and start a bundled Lasso reference workflow from a workflow request JSON payload.",
     handler: async (args, ctx) => {
       try {
         const request = parseRequestArgs(args);
