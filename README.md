@@ -1,5 +1,7 @@
 # Lasso
 
+![Agent Wrangling](docs/agent-wrangling.png)
+
 Lasso is a dynamic harness engine built on `pi-duroxide`. It goes from intent to
 executable workflow — and repairs the harness while it runs.
 
@@ -60,6 +62,8 @@ Then, inside pi:
   - [Verification engine](#verification-engine)
   - [Compiler optimizations](#compiler-optimizations)
   - [Harness mutations](#harness-mutations)
+  - [Guardrails](#guardrails)
+  - [Failure mode generation](#failure-mode-generation)
   - [Adaptive runtime](#adaptive-runtime)
   - [Lineage persistence](#lineage-persistence)
   - [Harness memory](#harness-memory)
@@ -412,6 +416,60 @@ Each mutation carries a `trigger` (why it was emitted) and `description`
 | `retry_exhausted` | `modify-node` | Add retry policy with exponential backoff |
 | `verification_failed` | `add-verification` | Add verification hook |
 | `loop_detected` | `modify-node` | Flag adjacent nodes for merge |
+
+### Guardrails
+
+Enforce execution limits at runtime. The compiler stops execution when limits
+are exceeded, throwing a `GuardrailExceededError` with a descriptive message.
+
+```json
+{
+  "name": "limited-workflow",
+  "executionPolicy": {
+    "maxSteps": 25,
+    "costLimitUsd": 0.25,
+    "timeout": 300000
+  },
+  "graph": { "..." : "..." }
+}
+```
+
+| Field | Type | Enforcement |
+| --- | --- | --- |
+| `maxSteps` | `number` (positive integer) | Stops after N node executions |
+| `costLimitUsd` | `number` (positive) | Stops when estimated LLM cost exceeds limit |
+| `timeout` | `number` (ms) | Stops after wall-clock time |
+
+Step count resets on `continueAsNew` (adaptive evolution). Cost accumulates
+across versions.
+
+### Failure mode generation
+
+Before execution, Lasso generates plausible failure modes from the task
+description and environment. This answers "Where am I likely to fail?" before
+acting.
+
+```typescript
+import { generateFailureModes } from "lasso";
+
+const generation = generateFailureModes("Deploy my app to staging", env);
+// generation.failureModes — array of FailureMode
+// generation.riskSummary — "HIGH RISK: auth failures likely (env constraint detected)"
+```
+
+| Task keyword | Generated failure modes |
+| --- | --- |
+| `deploy` | auth expiry, network timeout, config drift |
+| `test` | flaky tests, timeout, environment mismatch |
+| `build` | dependency failure, disk full, OOM |
+| `merge` | conflict, verification failure |
+| `database` | connection timeout, migration failure |
+| `api` | rate limit, auth expiry, schema mismatch |
+| `file` | permission denied, disk full, path not found |
+
+Failure modes are cross-referenced with environment constraints: if auth
+constraint detected, auth failure probability is boosted. Each mode includes
+triggers, mitigations, and recovery actions.
 
 ### Verification engine
 
