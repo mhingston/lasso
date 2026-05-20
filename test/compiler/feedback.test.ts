@@ -13,6 +13,7 @@ import {
 } from "../../src/compiler/feedback.js";
 import { compileHarnessSpec } from "../../src/compiler/compile.js";
 import type { HarnessSpec } from "../../src/spec/types.js";
+import type { HarnessMutation, MutationTrigger } from "../../src/mutation/types.js";
 
 // ============================================================================
 // Test helper: create specs with various shapes
@@ -374,52 +375,60 @@ describe("analyzeCompiledWorkflow — risk assessment", () => {
 });
 
 // ============================================================================
-// Suggestion Generation Tests
+// Mutation Generation Tests
 // ============================================================================
 
-describe("analyzeCompiledWorkflow — suggestion generation", () => {
-  it("suggests reduce-llm when LLM count > 5", () => {
+describe("analyzeCompiledWorkflow — mutation generation", () => {
+  it("emits replace-node mutation with cost_high trigger when LLM count > 5", () => {
     const compiled = compileHarnessSpec(createMultiLlmSpec(6));
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    const reduceLlmSuggestion = analysis.suggestions.find(s => s.type === "reduce-llm");
-    expect(reduceLlmSuggestion).toBeDefined();
-    expect(reduceLlmSuggestion?.impact).toBe("high");
+    const costMutations = analysis.mutations.filter(m => m.trigger === "cost_high");
+    expect(costMutations.length).toBeGreaterThan(0);
+    expect(costMutations[0].type).toBe("replace-node");
+    expect(costMutations[0].params.nodeId).toBeDefined();
+    expect(costMutations[0].description).toBeDefined();
   });
 
-  it("does not suggest reduce-llm when LLM count <= 5", () => {
+  it("does not emit cost_high mutation when LLM count <= 5", () => {
     const compiled = compileHarnessSpec(createMultiLlmSpec(3));
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    const reduceLlmSuggestion = analysis.suggestions.find(s => s.type === "reduce-llm");
-    expect(reduceLlmSuggestion).toBeUndefined();
+    const costMutations = analysis.mutations.filter(m => m.trigger === "cost_high");
+    expect(costMutations.length).toBe(0);
   });
 
-  it("suggests add-retry when no retry policies exist", () => {
+  it("emits modify-node mutation with retry_exhausted trigger when no retry policies exist", () => {
     const compiled = compileHarnessSpec(createEmptySpec());
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    const addRetrySuggestion = analysis.suggestions.find(s => s.type === "add-retry");
-    expect(addRetrySuggestion).toBeDefined();
+    const retryMutations = analysis.mutations.filter(m => m.trigger === "retry_exhausted");
+    expect(retryMutations.length).toBeGreaterThan(0);
+    expect(retryMutations[0].type).toBe("modify-node");
+    expect(retryMutations[0].params.nodeId).toBeDefined();
+    expect(retryMutations[0].params.changes).toBeDefined();
+    expect(retryMutations[0].description).toBeDefined();
   });
 
-  it("does not suggest add-retry when retry policies exist", () => {
+  it("does not emit retry_exhausted mutation when retry policies exist", () => {
     const compiled = compileHarnessSpec(createSpecWithRetry());
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    const addRetrySuggestion = analysis.suggestions.find(s => s.type === "add-retry");
-    expect(addRetrySuggestion).toBeUndefined();
+    const retryMutations = analysis.mutations.filter(m => m.trigger === "retry_exhausted");
+    expect(retryMutations.length).toBe(0);
   });
 
-  it("suggests merge-nodes for adjacent same-tool nodes", () => {
+  it("emits modify-node mutation for merge-nodes with loop_detected trigger", () => {
     const compiled = compileHarnessSpec(createAdjacentToolSpec());
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    const mergeNodesSuggestion = analysis.suggestions.find(s => s.type === "merge-nodes");
-    expect(mergeNodesSuggestion).toBeDefined();
+    const mergeMutations = analysis.mutations.filter(m => m.trigger === "loop_detected");
+    expect(mergeMutations.length).toBeGreaterThan(0);
+    expect(mergeMutations[0].type).toBe("modify-node");
+    expect(mergeMutations[0].description).toBeDefined();
   });
 
-  it("does not suggest merge-nodes for non-adjacent same-tool nodes", () => {
+  it("does not emit merge mutation for non-adjacent same-tool nodes", () => {
     const spec: HarnessSpec = {
       name: "non-adjacent",
       graph: {
@@ -438,36 +447,71 @@ describe("analyzeCompiledWorkflow — suggestion generation", () => {
     const compiled = compileHarnessSpec(spec);
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    const mergeNodesSuggestion = analysis.suggestions.find(s => s.type === "merge-nodes");
-    expect(mergeNodesSuggestion).toBeUndefined();
+    const mergeMutations = analysis.mutations.filter(m => m.trigger === "loop_detected");
+    expect(mergeMutations.length).toBe(0);
   });
 
-  it("suggests add-verification when no verification exists", () => {
+  it("emits add-verification mutation with verification_failed trigger when no verification exists", () => {
     const compiled = compileHarnessSpec(createEmptySpec());
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    const addVerificationSuggestion = analysis.suggestions.find(s => s.type === "add-verification");
-    expect(addVerificationSuggestion).toBeDefined();
+    const verificationMutations = analysis.mutations.filter(m => m.trigger === "verification_failed");
+    expect(verificationMutations.length).toBeGreaterThan(0);
+    expect(verificationMutations[0].type).toBe("add-verification");
+    expect(verificationMutations[0].params.nodeId).toBeDefined();
+    expect(verificationMutations[0].description).toBeDefined();
   });
 
-  it("does not suggest add-verification when verification exists", () => {
+  it("does not emit verification_failed mutation when verification exists", () => {
     const compiled = compileHarnessSpec(createSpecWithVerification());
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    const addVerificationSuggestion = analysis.suggestions.find(s => s.type === "add-verification");
-    expect(addVerificationSuggestion).toBeUndefined();
+    const verificationMutations = analysis.mutations.filter(m => m.trigger === "verification_failed");
+    expect(verificationMutations.length).toBe(0);
   });
 
-  it("generates multiple suggestions for a complex workflow", () => {
+  it("generates multiple mutations for a complex workflow", () => {
     const compiled = compileHarnessSpec(createComplexSpec());
     const analysis = analyzeCompiledWorkflow(compiled);
 
-    expect(analysis.suggestions.length).toBeGreaterThan(1);
+    expect(analysis.mutations.length).toBeGreaterThan(1);
+  });
+
+  it("mutations carry both trigger and description for readability", () => {
+    const compiled = compileHarnessSpec(createComplexSpec());
+    const analysis = analyzeCompiledWorkflow(compiled);
+
+    for (const mutation of analysis.mutations) {
+      expect(mutation.trigger).toBeDefined();
+      expect(mutation.description).toBeDefined();
+      expect(typeof mutation.description).toBe("string");
+      expect(mutation.description!.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("emits replace-node mutations for each LLM node when cost_high", () => {
+    const compiled = compileHarnessSpec(createMultiLlmSpec(6));
+    const analysis = analyzeCompiledWorkflow(compiled);
+
+    const replaceMutations = analysis.mutations.filter(m => m.type === "replace-node");
+    expect(replaceMutations.length).toBe(6);
+    for (const m of replaceMutations) {
+      expect(m.params.nodeId).toMatch(/^llm-/);
+      expect(m.params.changes).toBeDefined();
+    }
+  });
+
+  it("keeps backward-compatible suggestions field", () => {
+    const compiled = compileHarnessSpec(createComplexSpec());
+    const analysis = analyzeCompiledWorkflow(compiled);
+
+    expect(analysis.suggestions).toBeDefined();
+    expect(Array.isArray(analysis.suggestions)).toBe(true);
   });
 });
 
 // ============================================================================
-// applyCompilerSuggestions Tests
+// applyCompilerSuggestions Tests (backward compatibility)
 // ============================================================================
 
 describe("applyCompilerSuggestions", () => {
@@ -622,6 +666,68 @@ describe("applyCompilerSuggestions", () => {
 });
 
 // ============================================================================
+// Mutation-based feedback → mutateHarness integration
+// ============================================================================
+
+describe("feedback mutations → mutateHarness integration", () => {
+  it("retry_exhausted mutations can be applied via mutateHarness", async () => {
+    const { mutateHarness } = await import("../../src/mutation/engine.js");
+    const spec = createEmptySpec();
+    const compiled = compileHarnessSpec(spec);
+    const analysis = analyzeCompiledWorkflow(compiled);
+
+    const retryMutations = analysis.mutations.filter(m => m.trigger === "retry_exhausted");
+    expect(retryMutations.length).toBeGreaterThan(0);
+
+    const result = mutateHarness(spec, retryMutations);
+    const toolNode = result.spec.graph.nodes.find(n => n.id === "start");
+    expect(toolNode?.retryPolicy).toBeDefined();
+    expect(toolNode?.retryPolicy?.maxAttempts).toBe(3);
+  });
+
+  it("verification_failed mutations can be applied via mutateHarness", async () => {
+    const { mutateHarness } = await import("../../src/mutation/engine.js");
+    const spec = createEmptySpec();
+    const compiled = compileHarnessSpec(spec);
+    const analysis = analyzeCompiledWorkflow(compiled);
+
+    const verificationMutations = analysis.mutations.filter(m => m.trigger === "verification_failed");
+    expect(verificationMutations.length).toBeGreaterThan(0);
+
+    const result = mutateHarness(spec, verificationMutations);
+    const toolNode = result.spec.graph.nodes.find(n => n.id === "start");
+    expect(toolNode?.verificationPolicy).toBeDefined();
+  });
+
+  it("cost_high replace-node mutations can be applied via mutateHarness", async () => {
+    const { mutateHarness } = await import("../../src/mutation/engine.js");
+    const spec = createMultiLlmSpec(6);
+    const compiled = compileHarnessSpec(spec);
+    const analysis = analyzeCompiledWorkflow(compiled);
+
+    const costMutations = analysis.mutations.filter(m => m.trigger === "cost_high");
+    expect(costMutations.length).toBeGreaterThan(0);
+
+    const result = mutateHarness(spec, costMutations);
+    for (const node of result.spec.graph.nodes) {
+      if (node.kind === "llm") {
+        expect((node as any).model).toBe("gpt-4o-mini");
+      }
+    }
+  });
+
+  it("all mutation types from feedback are valid HarnessMutation types", async () => {
+    const { mutateHarness } = await import("../../src/mutation/engine.js");
+    const spec = createComplexSpec();
+    const compiled = compileHarnessSpec(spec);
+    const analysis = analyzeCompiledWorkflow(compiled);
+
+    // Should not throw — all mutation types are valid
+    expect(() => mutateHarness(spec, analysis.mutations)).not.toThrow();
+  });
+});
+
+// ============================================================================
 // Integration with Meta-Harness Tests
 // ============================================================================
 
@@ -635,25 +741,23 @@ describe("Meta-Harness integration", () => {
     expect(result.compilerAnalysis).toBeDefined();
     expect(result.compilerAnalysis?.cost).toBeDefined();
     expect(result.compilerAnalysis?.risk).toBeDefined();
-    expect(result.compilerAnalysis?.suggestions).toBeDefined();
+    expect(result.compilerAnalysis?.mutations).toBeDefined();
   });
 
-  it("applies high-risk suggestions and recompiles", async () => {
+  it("applies high-risk mutations and recompiles", async () => {
     const { DefaultMetaHarness } = await import("../../src/metaharness/engine.js");
     const harness = new DefaultMetaHarness({});
 
-    // Use an intent that generates a spec without retry
     const result = await harness.generateHarness("Run tests");
 
     // After feedback loop, the spec should have retry policies applied
-    // if high-risk suggestions were found
-    if (result.compilerAnalysis?.suggestions.some(s => s.type === "add-retry")) {
+    // if retry_exhausted mutations were found
+    if (result.compilerAnalysis?.mutations.some(m => m.trigger === "retry_exhausted")) {
       const hasRetry = result.spec.graph.nodes.some(
         n => n.kind === "tool" || n.kind === "llm"
       ) && result.spec.graph.nodes.some(
         n => (n.kind === "tool" || n.kind === "llm") && n.retryPolicy
       );
-      // The feedback loop should have applied retry
       expect(hasRetry).toBe(true);
     }
   });
@@ -666,5 +770,15 @@ describe("Meta-Harness integration", () => {
 
     expect(result.compilerOptimizations).toBeDefined();
     expect(Array.isArray(result.compilerOptimizations)).toBe(true);
+  });
+
+  it("stores applied mutations in MetaHarnessResult", async () => {
+    const { DefaultMetaHarness } = await import("../../src/metaharness/engine.js");
+    const harness = new DefaultMetaHarness({});
+
+    const result = await harness.generateHarness("Run tests");
+
+    expect(result.appliedMutations).toBeDefined();
+    expect(Array.isArray(result.appliedMutations)).toBe(true);
   });
 });

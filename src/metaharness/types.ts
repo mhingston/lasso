@@ -3,7 +3,7 @@ import type { EnvironmentModel, EnvironmentAnalysis } from "../environment/types
 import type { FailureSignature } from "../failures/ontology.js";
 import type { MemoryAdvice, MemoryStore } from "../memory/types.js";
 import type { CapabilityRegistry } from "../capabilities/types.js";
-import type { MutationPolicy } from "../mutation/types.js";
+import type { MutationPolicy, HarnessMutation } from "../mutation/types.js";
 import type { CompilerAnalysis, CompilerSuggestion } from "../compiler/feedback.js";
 import type { HarnessStage, CompositionResult } from "../composition/types.js";
 
@@ -24,6 +24,7 @@ export interface MetaHarnessResult {
   readinessScore: number;
   compilerAnalysis?: CompilerAnalysis;
   compilerOptimizations: string[];
+  appliedMutations: HarnessMutation[];
 }
 
 export interface MetaHarness {

@@ -1,5 +1,6 @@
 import type { CompiledHarnessWorkflow } from "./compile.js";
 import type { HarnessSpec, TaskNode, LlmNode, ToolNode, HumanNode, RetryPolicy, VerificationPolicy } from "../spec/types.js";
+import type { HarnessMutation, MutationTrigger } from "../mutation/types.js";
 
 // ============================================================================
 // Types
@@ -26,6 +27,7 @@ export interface RiskFactor {
   factors: string[];
 }
 
+/** @deprecated Use HarnessMutation with trigger/description instead */
 export interface CompilerSuggestion {
   type: "reduce-llm" | "add-retry" | "merge-nodes" | "simplify" | "add-verification";
   description: string;
@@ -35,7 +37,9 @@ export interface CompilerSuggestion {
 export interface CompilerAnalysis {
   cost: CostEstimate;
   risk: RiskAssessment;
+  /** @deprecated Use mutations instead */
   suggestions: CompilerSuggestion[];
+  mutations: HarnessMutation[];
 }
 
 // ============================================================================
@@ -48,6 +52,7 @@ const LLM_DURATION_MS = 2000;
 const HUMAN_DURATION_MS = 300000; // 5 minutes average wait
 const COMPLEXITY_NODE_THRESHOLD = 5;
 const HIGH_LLM_THRESHOLD = 5;
+const COST_THRESHOLD_USD = 0.05;
 
 // ============================================================================
 // Main analysis function
@@ -62,8 +67,9 @@ export function analyzeCompiledWorkflow(
   const cost = estimateCost(nodes);
   const risk = assessRisk(nodes, edges);
   const suggestions = generateSuggestions(nodes, edges);
+  const mutations = generateMutations(nodes, edges, cost);
 
-  return { cost, risk, suggestions };
+  return { cost, risk, suggestions, mutations };
 }
 
 // ============================================================================
@@ -274,6 +280,100 @@ function findAdjacentSameToolNodes(nodes: TaskNode[], edges: { from: string; to:
   }
 
   return pairs;
+}
+
+// ============================================================================
+// Mutation generation
+// ============================================================================
+
+function generateMutations(
+  nodes: TaskNode[],
+  edges: { from: string; to: string }[],
+  cost: CostEstimate,
+): HarnessMutation[] {
+  const mutations: HarnessMutation[] = [];
+
+  // Cost-high: replace expensive LLM nodes with cheaper models
+  if (cost.estimatedCostUsd > COST_THRESHOLD_USD) {
+    const llmNodes = nodes.filter(n => n.kind === "llm");
+    for (const llmNode of llmNodes) {
+      mutations.push({
+        type: "replace-node",
+        params: { nodeId: llmNode.id, changes: { model: "gpt-4o-mini" } },
+        trigger: "cost_high",
+        description: `Replace expensive model in ${llmNode.id} to reduce cost`,
+      });
+    }
+  }
+
+  // Retry-exhausted: add retry policies to nodes that lack them
+  const nodesNeedingRetry = nodes.filter(
+    n => (n.kind === "tool" || n.kind === "llm" || n.kind === "subworkflow") &&
+         (!n.retryPolicy || n.retryPolicy.maxAttempts === 0)
+  );
+  for (const node of nodesNeedingRetry) {
+    mutations.push({
+      type: "modify-node",
+      params: {
+        nodeId: node.id,
+        changes: {
+          retryPolicy: { maxAttempts: 3, backoff: "exponential", initialDelay: 1 },
+        },
+      },
+      trigger: "retry_exhausted",
+      description: `Add retry policy to ${node.id} to handle transient failures`,
+    });
+  }
+
+  // Loop-detected: flag adjacent same-tool nodes for merging
+  const adjacentPairs = findAdjacentSameToolNodes(nodes, edges);
+  for (const [fromId, toId] of adjacentPairs) {
+    mutations.push({
+      type: "modify-node",
+      params: { nodeId: toId, changes: { _mergeCandidate: fromId } },
+      trigger: "loop_detected",
+      description: `Merge adjacent same-tool nodes ${fromId} → ${toId}`,
+    });
+  }
+
+  // Verification-failed: add verification to nodes that lack it
+  // Exclude nodes that serve as verification check nodes for other nodes
+  const verifierNodeIds = new Set<string>();
+  for (const node of nodes) {
+    if (node.verificationPolicy) {
+      for (const rule of node.verificationPolicy.rules) {
+        verifierNodeIds.add(rule.checkNodeId);
+      }
+    }
+  }
+
+  const nodesNeedingVerification = nodes.filter(
+    n => (n.kind === "tool" || n.kind === "llm") &&
+         !verifierNodeIds.has(n.id) &&
+         (!n.verificationPolicy || n.verificationPolicy.rules.length === 0)
+  );
+  for (const node of nodesNeedingVerification) {
+    const verifierId = `verify-${node.id}`;
+    mutations.push({
+      type: "add-verification",
+      params: {
+        nodeId: node.id,
+        verificationPolicy: {
+          rules: [
+            {
+              kind: "tool",
+              checkNodeId: verifierId,
+              onFail: "block",
+            },
+          ],
+        },
+      },
+      trigger: "verification_failed",
+      description: `Add verification to ${node.id} to ensure output quality`,
+    });
+  }
+
+  return mutations;
 }
 
 // ============================================================================

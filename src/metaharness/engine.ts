@@ -3,7 +3,7 @@ import type { EnvironmentModel, EnvironmentAnalysis } from "../environment/types
 import type { FailureSignature } from "../failures/ontology.js";
 import type { MemoryAdvice, MemoryStore } from "../memory/types.js";
 import type { CapabilityRegistry } from "../capabilities/types.js";
-import type { MutationPolicy } from "../mutation/types.js";
+import type { MutationPolicy, HarnessMutation } from "../mutation/types.js";
 import type { MetaHarnessConfig, MetaHarnessResult, MetaHarness } from "./types.js";
 import type { CompilerAnalysis } from "../compiler/feedback.js";
 import type { HarnessStage, CompositionResult } from "../composition/types.js";
@@ -16,7 +16,7 @@ import { buildTaskGraph } from "../synthesis/graph-builder.js";
 import { analyzeRisks } from "../synthesis/risk-analyzer.js";
 import { synthesizeHarness } from "../synthesis/harness-builder.js";
 import { compileHarnessSpec } from "../compiler/compile.js";
-import { analyzeCompiledWorkflow, applyCompilerSuggestions } from "../compiler/feedback.js";
+import { analyzeCompiledWorkflow } from "../compiler/feedback.js";
 import { predictFailuresFromEnvironment } from "./predictor.js";
 import { deriveMutationsFromFailure } from "../mutation/derive.js";
 import { mutateHarness } from "../mutation/engine.js";
@@ -129,6 +129,7 @@ export class DefaultMetaHarness implements MetaHarness {
     let optimizations: string[] = [];
     let compilerOptimizations: string[] = [];
     let compilerAnalysis: CompilerAnalysis | undefined;
+    const appliedMutations: HarnessMutation[] = [];
 
     try {
       let compiled = compileHarnessSpec(spec);
@@ -139,14 +140,20 @@ export class DefaultMetaHarness implements MetaHarness {
       // Analyze the compiled workflow
       compilerAnalysis = analyzeCompiledWorkflow(compiled);
 
-      // Check for high-risk suggestions and apply them
-      const highRiskSuggestions = compilerAnalysis.suggestions.filter(
-        s => s.impact === "high" && (s.type === "add-retry" || s.type === "add-verification")
+      // Use mutations directly from the feedback engine
+      const feedbackMutations = compilerAnalysis.mutations.filter(
+        m => m.trigger === "retry_exhausted" || m.trigger === "verification_failed" || m.trigger === "cost_high"
       );
 
-      if (highRiskSuggestions.length > 0) {
-        spec = applyCompilerSuggestions(spec, highRiskSuggestions);
-        compilerOptimizations = highRiskSuggestions.map(s => s.description);
+      if (feedbackMutations.length > 0) {
+        const limitedMutations = this.config.mutationPolicy
+          ? enforceMutationPolicy(feedbackMutations, this.config.mutationPolicy)
+          : feedbackMutations;
+
+        const mutationResult = mutateHarness(spec, limitedMutations);
+        spec = mutationResult.spec;
+        appliedMutations.push(...limitedMutations);
+        compilerOptimizations = limitedMutations.map(m => m.description ?? m.type);
 
         // Recompile with the modified spec
         compiled = compileHarnessSpec(spec);
@@ -173,6 +180,7 @@ export class DefaultMetaHarness implements MetaHarness {
       readinessScore,
       compilerAnalysis,
       compilerOptimizations,
+      appliedMutations,
     };
   }
 

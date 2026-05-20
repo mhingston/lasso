@@ -54,6 +54,7 @@ export { extractPatternsFromTrace } from "./memory/extractor.js";
 export type { HarnessMemory, MemoryStore, MemoryAdvice } from "./memory/types.js";
 export { analyzeCompiledWorkflow, applyCompilerSuggestions } from "./compiler/feedback.js";
 export type { CostEstimate, CompilerAnalysis, CompilerSuggestion } from "./compiler/feedback.js";
+export type { HarnessMutation, MutationType, MutationTrigger, MutationPolicy, MutationResult, SpecDiff } from "./mutation/types.js";
 export { chainHarnesses } from "./composition/chain.js";
 export { parallelHarnesses } from "./composition/parallel.js";
 export { conditionalHarness } from "./composition/conditional.js";

@@ -10,6 +10,8 @@ import type {
   AddEdgeParams,
   ToggleApprovalParams,
   AddVerificationParams,
+  ReplaceNodeParams,
+  TightenGuardrailParams,
 } from "./types.js";
 
 export function mutateHarness(
@@ -43,6 +45,12 @@ export function mutateHarness(
         break;
       case "add-verification":
         current = applyAddVerification(current, mutation.params as unknown as AddVerificationParams);
+        break;
+      case "replace-node":
+        current = applyReplaceNode(current, mutation.params as unknown as ReplaceNodeParams);
+        break;
+      case "tighten-guardrail":
+        current = applyTightenGuardrail(current, mutation.params as unknown as TightenGuardrailParams);
         break;
     }
     applied.push(mutation);
@@ -188,6 +196,47 @@ function applyToggleApproval(
 function applyAddVerification(
   spec: HarnessSpec,
   params: AddVerificationParams,
+): HarnessSpec {
+  const idx = spec.graph.nodes.findIndex((n) => n.id === params.nodeId);
+  if (idx === -1) {
+    throw new Error(`Node "${params.nodeId}" not found`);
+  }
+
+  const nodes = [...spec.graph.nodes];
+  nodes[idx] = {
+    ...nodes[idx],
+    verificationPolicy: params.verificationPolicy,
+  } as TaskNode;
+
+  return {
+    ...spec,
+    graph: { ...spec.graph, nodes },
+  };
+}
+
+function applyReplaceNode(
+  spec: HarnessSpec,
+  params: ReplaceNodeParams,
+): HarnessSpec {
+  const idx = spec.graph.nodes.findIndex((n) => n.id === params.nodeId);
+  if (idx === -1) {
+    throw new Error(`Node "${params.nodeId}" not found`);
+  }
+
+  const { id: _id, kind: _kind, ...safeChanges } = params.changes as Record<string, unknown>;
+
+  const nodes = [...spec.graph.nodes];
+  nodes[idx] = { ...nodes[idx], ...safeChanges } as TaskNode;
+
+  return {
+    ...spec,
+    graph: { ...spec.graph, nodes },
+  };
+}
+
+function applyTightenGuardrail(
+  spec: HarnessSpec,
+  params: TightenGuardrailParams,
 ): HarnessSpec {
   const idx = spec.graph.nodes.findIndex((n) => n.id === params.nodeId);
   if (idx === -1) {

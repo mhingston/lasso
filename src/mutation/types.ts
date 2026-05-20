@@ -6,11 +6,25 @@ export type MutationType =
   | "modify-node"
   | "add-edge"
   | "toggle-approval"
-  | "add-verification";
+  | "add-verification"
+  | "replace-node"
+  | "tighten-guardrail";
+
+export type MutationTrigger =
+  | "node_failed"
+  | "confidence_low"
+  | "cost_high"
+  | "loop_detected"
+  | "retry_exhausted"
+  | "verification_failed"
+  | "tool_missing"
+  | "auth_expired";
 
 export interface HarnessMutation {
   type: MutationType;
   params: Record<string, unknown>;
+  trigger?: MutationTrigger;
+  description?: string;
 }
 
 export interface MutationPolicy {
@@ -55,6 +69,16 @@ export interface ToggleApprovalParams {
 }
 
 export interface AddVerificationParams {
+  nodeId: string;
+  verificationPolicy: NonNullable<TaskNode["verificationPolicy"]>;
+}
+
+export interface ReplaceNodeParams {
+  nodeId: string;
+  changes: Partial<TaskNode>;
+}
+
+export interface TightenGuardrailParams {
   nodeId: string;
   verificationPolicy: NonNullable<TaskNode["verificationPolicy"]>;
 }
