@@ -196,7 +196,7 @@ describe("validateCirWorkflow", () => {
     }
   });
 
-  it("rejects unreachable verifier nodes", () => {
+  it("allows unreachable verifier nodes when referenced by verification hooks", () => {
     const workflow = cloneWorkflow(createValidCirWorkflow());
     workflow.nodes.push({
       id: "orphan-check",
@@ -220,6 +220,7 @@ describe("validateCirWorkflow", () => {
 
     startNode.verification = [
       {
+        kind: "tool",
         checkNodeId: "orphan-check",
         onFail: "block"
       }
@@ -227,10 +228,7 @@ describe("validateCirWorkflow", () => {
 
     const result = validateCirWorkflow(workflow);
 
-    expect(result.valid).toBe(false);
-    if (!result.valid) {
-      expect(result.errors.some(error => error.includes("Unreachable CIR node: orphan-check"))).toBe(true);
-    }
+    expect(result.valid).toBe(true);
   });
 
   it("rejects non-terminal nodes with no follow-on transition", () => {

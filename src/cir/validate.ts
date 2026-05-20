@@ -139,6 +139,24 @@ function validateReachability(
     return;
   }
 
+  // Collect verification nodes
+  const verificationNodes = new Set<string>();
+  for (const node of nodeMap.values()) {
+    if (node.verification) {
+      for (const hook of node.verification) {
+        verificationNodes.add(hook.checkNodeId);
+        // If it's a condition node used as expression verifier, mark its branches too
+        const verifierNode = nodeMap.get(hook.checkNodeId);
+        if (verifierNode?.kind === "condition") {
+          const condTransitions = outgoingTransitions.get(hook.checkNodeId) ?? [];
+          for (const trans of condTransitions) {
+            verificationNodes.add(trans.to);
+          }
+        }
+      }
+    }
+  }
+
   const reachableNodeIds = new Set<string>([workflow.entryNodeId]);
   const queue = [workflow.entryNodeId];
 
@@ -153,7 +171,7 @@ function validateReachability(
   }
 
   for (const nodeId of nodeMap.keys()) {
-    if (!reachableNodeIds.has(nodeId)) {
+    if (!reachableNodeIds.has(nodeId) && !verificationNodes.has(nodeId)) {
       errors.push(`Unreachable CIR node: ${nodeId}`);
     }
   }

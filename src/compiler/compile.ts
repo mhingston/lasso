@@ -5,7 +5,7 @@ import { lowerHarnessSpecToCir } from "../cir/lower.js";
 import { validateCirWorkflow } from "../cir/validate.js";
 import type { HarnessSpec } from "../spec/types.js";
 import { validateHarnessSpec } from "../spec/validate.js";
-import { createHarnessState, recordNodeResult, updateMetrics } from "../state/snapshots.js";
+import { addFailure, createHarnessState, recordNodeResult, updateMetrics } from "../state/snapshots.js";
 import type { HarnessState } from "../state/types.js";
 import {
   buildShellCommand,

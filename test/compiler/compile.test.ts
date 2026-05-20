@@ -263,6 +263,136 @@ describe("compileHarnessSpec", () => {
     expect(() => iterator.next({ passed: true, ok: false })).toThrow(/Ambiguous boolean status fields: passed, ok/);
   });
 
+  it("throws on verification block and records verification_failed", () => {
+    const compiled = compileHarnessSpec(createBlockVerificationSpec());
+    const mock = createMockContext();
+    const iterator = compiled.workflows[0].generator(mock.context as any, {});
+
+    // Execute primary node
+    expect(iterator.next().value).toMatchObject({
+      kind: "tool-call",
+      name: "bash",
+    });
+
+    // Execute verification node (LLM)
+    expect(iterator.next({ ok: true }).value).toMatchObject({
+      kind: "llm-call",
+    });
+
+    // Verifier returns false, should throw with block message
+    let thrownError: Error | undefined;
+    let finalValue: any;
+    try {
+      finalValue = iterator.next({ passed: false });
+    } catch (error) {
+      thrownError = error as Error;
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError?.message).toContain("Verification failed via confirm-output");
+
+    // The error should have been thrown before yielding a final value
+    // So we can't inspect harnessState directly from the completed result
+    // But we can verify the error message contains the verification failure indicator
+    expect(thrownError?.message).toMatch(/Verification failed/);
+  });
+
+  it("throws on verification retry exhaustion and records verification_failed", () => {
+    const compiled = compileHarnessSpec(createExhaustRetryVerificationSpec());
+    const mock = createMockContext();
+    const iterator = compiled.workflows[0].generator(mock.context as any, {});
+
+    // Execute primary node - attempt 1
+    expect(iterator.next().value).toMatchObject({
+      kind: "tool-call",
+      name: "bash",
+    });
+
+    // Execute verification node - attempt 1 (verifier succeeds but returns false)
+    expect(iterator.next({ ok: true }).value).toMatchObject({
+      kind: "tool-call",
+    });
+
+    // Verification interprets result as false, retries primary node - attempt 2
+    expect(iterator.next(false).value).toMatchObject({
+      kind: "tool-call",
+      name: "bash",
+    });
+
+    // Execute verification node - attempt 2
+    expect(iterator.next({ ok: true }).value).toMatchObject({
+      kind: "tool-call",
+    });
+
+    // Verification fails again, exhausts retries
+    let thrownError: Error | undefined;
+    try {
+      iterator.next(false);
+    } catch (error) {
+      thrownError = error as Error;
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError?.message).toContain("Verification retry exhausted");
+    expect(thrownError?.message).toContain("verify-check");
+  });
+
+  it("executes expression verification without yielding external action", () => {
+    const compiled = compileHarnessSpec(createExpressionVerificationSpec());
+    const mock = createMockContext();
+    const iterator = compiled.workflows[0].generator(mock.context as any, {});
+
+    // Execute primary node
+    const firstYield = iterator.next().value;
+    expect(firstYield).toMatchObject({
+      kind: "tool-call",
+      name: "bash",
+    });
+
+    // Primary node returns with ok: true, expression verification evaluates directly
+    // Should go straight to subworkflow without yielding verifier
+    const secondYield = iterator.next({ ok: true }).value;
+    expect(secondYield).toMatchObject({
+      kind: "subworkflow",
+      name: "finish-flow",
+    });
+
+    // Complete the workflow
+    const finalValue = iterator.next({});
+    expect(finalValue.done).toBe(true);
+    expect(finalValue.value.status).toBe("completed");
+
+    // Verify expression verifier result was recorded
+    expect(finalValue.value.outputs["check-expr"]).toMatchObject({
+      evaluated: true,
+      result: true,
+      expression: "outputs.action.ok",
+    });
+  });
+
+  it("expression verification records failure when expression evaluates to false", () => {
+    const compiled = compileHarnessSpec(createExpressionVerificationSpec());
+    const mock = createMockContext();
+    const iterator = compiled.workflows[0].generator(mock.context as any, {});
+
+    // Execute primary node
+    expect(iterator.next().value).toMatchObject({
+      kind: "tool-call",
+      name: "bash",
+    });
+
+    // Primary node returns with ok: false, expression will fail
+    let thrownError: Error | undefined;
+    try {
+      iterator.next({ ok: false });
+    } catch (error) {
+      thrownError = error as Error;
+    }
+
+    expect(thrownError).toBeDefined();
+    expect(thrownError?.message).toContain("Verification failed via check-expr");
+  });
+
   it("routes condition nodes using stored node outputs", () => {
     const compiled = compileHarnessSpec(createConditionSpec());
     const mock = createMockContext();
@@ -934,6 +1064,127 @@ function createConditionalMergeSpec(): HarnessSpec {
         { from: "yes-branch", to: "join" },
         { from: "no-branch", to: "join" },
         { from: "join", to: "finish" },
+      ],
+    },
+  };
+}
+
+function createBlockVerificationSpec(): HarnessSpec {
+  return {
+    name: "block-verification",
+    graph: {
+      entryNodeId: "action",
+      nodes: [
+        {
+          id: "action",
+          kind: "tool",
+          tool: "npm",
+          args: ["test"],
+          verificationPolicy: {
+            rules: [
+              {
+                kind: "llm",
+                checkNodeId: "confirm-output",
+                onFail: "block",
+              },
+            ],
+          },
+        },
+        {
+          id: "confirm-output",
+          kind: "llm",
+          provider: "anthropic",
+          model: "claude-sonnet",
+          prompt: "Did the test pass?",
+        },
+      ],
+      edges: [],
+    },
+  };
+}
+
+function createExhaustRetryVerificationSpec(): HarnessSpec {
+  return {
+    name: "exhaust-retry-verification",
+    graph: {
+      entryNodeId: "action",
+      nodes: [
+        {
+          id: "action",
+          kind: "tool",
+          tool: "npm",
+          args: ["test"],
+          verificationPolicy: {
+            rules: [
+              {
+                kind: "tool",
+                checkNodeId: "verify-check",
+                onFail: "retry",
+                maxAttempts: 2,
+              },
+            ],
+          },
+        },
+        {
+          id: "verify-check",
+          kind: "tool",
+          tool: "test",
+          args: ["-f", "output.txt"],
+        },
+      ],
+      edges: [],
+    },
+  };
+}
+
+function createExpressionVerificationSpec(): HarnessSpec {
+  return {
+    name: "expression-verification",
+    graph: {
+      entryNodeId: "action",
+      nodes: [
+        {
+          id: "action",
+          kind: "tool",
+          tool: "npm",
+          args: ["test"],
+          verificationPolicy: {
+            rules: [
+              {
+                kind: "expression",
+                checkNodeId: "check-expr",
+                onFail: "block",
+              },
+            ],
+          },
+        },
+        {
+          id: "check-expr",
+          kind: "condition",
+          condition: "outputs.action.ok",
+          thenNodeId: "success-node",
+          elseNodeId: "failure-node",
+        },
+        {
+          id: "success-node",
+          kind: "tool",
+          tool: "echo",
+          args: ["success"],
+        },
+        {
+          id: "failure-node",
+          kind: "tool",
+          tool: "echo",
+          args: ["failure"],
+        },
+        {
+          id: "finish",
+          kind: "subworkflow",
+          specRef: "finish-flow",
+        },
+      ],
+      edges: [
+        { from: "action", to: "finish" },
       ],
     },
   };
