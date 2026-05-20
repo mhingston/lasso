@@ -11,9 +11,9 @@ Lasso is now its own repository. `pi-duroxide` is a dependency, not a sibling pa
 
 Roadmap work continues here in the standalone `lasso` repository.
 
-### Local development bridge
+### Published dependency
 
-Currently, local development uses the cleaned `feature-lasso-mvp` worktree from the `pi-duroxide` repository as a temporary package-level bridge. This allows the standalone repo to build and test safely while the `pi-duroxide` package boundary stabilizes.
+Lasso now consumes the published `pi-duroxide` npm package instead of a local worktree bridge. Local development and test runs in this repository no longer depend on a sibling checkout path.
 
 ## Reference workflows
 
