@@ -7,6 +7,9 @@ import type { HarnessVersion, LineageEntry, HarnessExecutionTrace } from "../ver
 import { deriveMutationsFromTrace } from "../mutation/derive.js";
 import { mutateHarness } from "../mutation/engine.js";
 import type { HarnessMutation, MutationResult } from "../mutation/types.js";
+import type { MemoryStore, HarnessMemory, MemoryAdvice, MemoryUpdate } from "../memory/types.js";
+import { extractPatternsFromTrace } from "../memory/extractor.js";
+import { adviseFromMemory } from "../memory/advisor.js";
 
 export const MAX_ADAPTIVE_VERSIONS = 5;
 
@@ -233,4 +236,73 @@ function isAdaptiveMetadata(value: unknown): value is AdaptiveRuntimeMetadata {
     && "lineage" in record
     && Array.isArray(record.lineage)
   );
+}
+
+export interface MemoryAwareReplanInput {
+  adaptive: AdaptiveRuntimeMetadata;
+  runtimeInput: unknown;
+  result: CompiledHarnessResult;
+  memoryStore: MemoryStore;
+  taskSignature?: string;
+}
+
+export interface MemoryAwareReplanOutput {
+  advice: MemoryAdvice;
+  updatedMemory?: HarnessMemory;
+  decision: RuntimeReplanDecision;
+}
+
+export async function prepareMemoryAwareRuntimeReplan(
+  input: MemoryAwareReplanInput,
+): Promise<MemoryAwareReplanOutput> {
+  const { adaptive, runtimeInput, result, memoryStore, taskSignature } = input;
+
+  const trace: HarnessExecutionTrace = {
+    entries: result.trace.entries,
+    totalDurationMs: result.harnessState.metrics.durationMs,
+    nodeCount: result.trace.entries.length,
+    failureCount: result.harnessState.failures.length,
+    startTimeMs: Date.now() - result.harnessState.metrics.durationMs,
+    endTimeMs: Date.now(),
+  };
+
+  const advice = await adviseFromMemory(
+    taskSignature ?? adaptive.currentRequest.workflow,
+    memoryStore,
+    { taskSignature },
+    adaptive.currentVersion.spec,
+  );
+
+  const decision = prepareRuntimeReplan(adaptive, runtimeInput, result);
+
+  let updatedMemory: HarnessMemory | undefined;
+
+  if (decision.decision === "continue_as_new" || decision.decision === "stop") {
+    const patterns = extractPatternsFromTrace(trace, adaptive.currentVersion.spec);
+
+    const taskId = taskSignature ?? `${adaptive.currentRequest.workflow}-v${adaptive.currentVersion.version}`;
+    const existingMemory = await memoryStore.getMemory(taskId);
+
+    if (existingMemory) {
+      const update: MemoryUpdate = {
+        effectivenessDelta: result.harnessState.failures.length === 0 ? 0.05 : -0.05,
+      };
+      updatedMemory = await memoryStore.updateMemory(taskId, update);
+    } else {
+      const effectivenessScore = result.harnessState.failures.length === 0 ? 0.7 : 0.3;
+      const memory: HarnessMemory = {
+        taskId,
+        taskEmbedding: taskSignature,
+        successfulPatterns: patterns.successful,
+        failedPatterns: patterns.failed,
+        mutationHistory: [],
+        effectivenessScore,
+        lastUpdated: Date.now(),
+      };
+      await memoryStore.saveMemory(memory);
+      updatedMemory = memory;
+    }
+  }
+
+  return { advice, updatedMemory, decision };
 }

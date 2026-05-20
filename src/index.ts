@@ -38,4 +38,7 @@ export { synthesizePolicy } from "./synthesis/policy-builder.js";
 export { synthesizeHarness } from "./synthesis/harness-builder.js";
 export { createInitialVersion, createNextVersion, createLineageEntry } from "./versioning/history.js";
 export { prepareInitialAdaptiveInput, unwrapAdaptiveInput, prepareRuntimeReplan, MAX_ADAPTIVE_VERSIONS } from "./replanner/runtime.js";
+export type { MetaHarnessConfig, MetaHarnessResult, MetaHarness } from "./metaharness/types.js";
+export { DefaultMetaHarness } from "./metaharness/engine.js";
+export { predictFailuresFromEnvironment } from "./metaharness/predictor.js";
 export { default } from "./pi/extension.js";

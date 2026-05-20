@@ -5,8 +5,13 @@ import { analyzeRisks } from "../synthesis/risk-analyzer.js";
 import { synthesizePolicy } from "../synthesis/policy-builder.js";
 import type { PlannerResult } from "./types.js";
 import type { CapabilityRegistry } from "../capabilities/types.js";
+import type { EnvironmentModel } from "../environment/types.js";
 
-export function planWorkflowRequest(brief: string, registry?: CapabilityRegistry): PlannerResult {
+export function planWorkflowRequest(
+  brief: string,
+  registry?: CapabilityRegistry,
+  environment?: EnvironmentModel
+): PlannerResult {
   // Reject empty briefs
   if (!brief || brief.trim().length === 0) {
     return {
@@ -41,7 +46,7 @@ export function planWorkflowRequest(brief: string, registry?: CapabilityRegistry
   const intent = parseResult.intent;
   
   // Build task graph from intent
-  const graph = buildTaskGraph(intent, registry);
+  const graph = buildTaskGraph(intent, registry, environment);
   
   // Analyze risks
   const risks = analyzeRisks(graph, registry);

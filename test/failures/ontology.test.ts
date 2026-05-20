@@ -1,6 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { FailureRecord } from "../../src/failures/types.js";
-import { classifyFailureRecord, isRetryableFailure } from "../../src/failures/ontology.js";
+import {
+  classifyFailureRecord,
+  isRetryableFailure,
+  classifyFailure,
+  type FailureSignature,
+  type FailureClass,
+  type FailureContext,
+} from "../../src/failures/ontology.js";
 import { mapReferenceFailure } from "../../src/failures/map-reference-failures.js";
 
 describe("Failure ontology", () => {
@@ -189,6 +196,244 @@ describe("Failure ontology", () => {
       expect(result.rootCause).toBe("unknown");
       expect(result.nodeId).toBe("some-node");
       expect(result.message).toBe("Something unexpected");
+    });
+  });
+
+  describe("classifyFailure (new ontology)", () => {
+    describe("auth failures", () => {
+      it("should classify 401 errors as auth", () => {
+        const result = classifyFailure(
+          new Error("Request failed with status code 401"),
+        );
+        expect(result.class).toBe("auth");
+        expect(result.confidence).toBeGreaterThan(0.5);
+        expect(result.retryable).toBe(false);
+        expect(result.requiresHumanIntervention).toBe(true);
+      });
+
+      it("should classify unauthorized messages as auth", () => {
+        const result = classifyFailure(
+          new Error("Unauthorized: invalid credentials"),
+        );
+        expect(result.class).toBe("auth");
+        expect(result.evidence.length).toBeGreaterThan(0);
+      });
+
+      it("should classify token expired as auth", () => {
+        const result = classifyFailure(
+          new Error("Token expired, please refresh"),
+        );
+        expect(result.class).toBe("auth");
+      });
+    });
+
+    describe("tool failures", () => {
+      it("should classify command not found as tool", () => {
+        const result = classifyFailure(
+          new Error("bash: git: command not found"),
+        );
+        expect(result.class).toBe("tool");
+        expect(result.retryable).toBe(false);
+      });
+
+      it("should classify non-zero exit codes as tool", () => {
+        const result = classifyFailure(
+          new Error("Process exited with code 1"),
+        );
+        expect(result.class).toBe("tool");
+      });
+    });
+
+    describe("resource failures", () => {
+      it("should classify disk full as resource", () => {
+        const result = classifyFailure(
+          new Error("No space left on device"),
+        );
+        expect(result.class).toBe("resource");
+        expect(result.retryable).toBe(true);
+      });
+
+      it("should classify OOM as resource", () => {
+        const result = classifyFailure(
+          new Error("JavaScript heap out of memory"),
+        );
+        expect(result.class).toBe("resource");
+      });
+
+      it("should classify rate limit as resource", () => {
+        const result = classifyFailure(
+          new Error("Rate limit exceeded: too many requests"),
+        );
+        expect(result.class).toBe("resource");
+        expect(result.retryable).toBe(true);
+      });
+    });
+
+    describe("semantic failures", () => {
+      it("should classify assertion failures as semantic", () => {
+        const result = classifyFailure(
+          new Error("Assertion failed: expected 5, got 3"),
+        );
+        expect(result.class).toBe("semantic");
+        expect(result.retryable).toBe(false);
+      });
+
+      it("should classify schema mismatches as semantic", () => {
+        const result = classifyFailure(
+          new Error("Schema validation error: missing field 'id'"),
+        );
+        expect(result.class).toBe("semantic");
+      });
+    });
+
+    describe("human failures", () => {
+      it("should classify rejected as human", () => {
+        const result = classifyFailure(
+          new Error("Human rejected the proposed changes"),
+        );
+        expect(result.class).toBe("human");
+        expect(result.requiresHumanIntervention).toBe(true);
+      });
+
+      it("should classify human timeout as human", () => {
+        const result = classifyFailure(
+          new Error("Timed out waiting for human approval"),
+        );
+        expect(result.class).toBe("human");
+      });
+    });
+
+    describe("environment-drift failures", () => {
+      it("should classify version mismatch as environment-drift", () => {
+        const result = classifyFailure(
+          new Error("Node.js version mismatch: expected 18, got 16"),
+        );
+        expect(result.class).toBe("environment-drift");
+        expect(result.retryable).toBe(false);
+      });
+
+      it("should classify missing dependency as environment-drift", () => {
+        const result = classifyFailure(
+          new Error("Cannot find module 'lodash'"),
+        );
+        expect(result.class).toBe("environment-drift");
+      });
+    });
+
+    describe("network failures", () => {
+      it("should classify connection timeout as network", () => {
+        const result = classifyFailure(
+          new Error("Connection timed out after 30000ms"),
+        );
+        expect(result.class).toBe("network");
+        expect(result.retryable).toBe(true);
+      });
+
+      it("should classify connection refused as network", () => {
+        const result = classifyFailure(
+          new Error("connect ECONNREFUSED 127.0.0.1:8080"),
+        );
+        expect(result.class).toBe("network");
+      });
+
+      it("should classify DNS failure as network", () => {
+        const result = classifyFailure(
+          new Error("getaddrinfo ENOTFOUND api.example.com"),
+        );
+        expect(result.class).toBe("network");
+      });
+    });
+
+    describe("unknown failures", () => {
+      it("should classify unrecognizable errors as unknown", () => {
+        const result = classifyFailure(
+          new Error("Something completely unexpected happened"),
+        );
+        expect(result.class).toBe("unknown");
+        expect(result.confidence).toBeLessThan(0.5);
+      });
+
+      it("should handle non-Error objects", () => {
+        const result = classifyFailure("string error");
+        expect(result.class).toBe("unknown");
+      });
+
+      it("should handle null errors", () => {
+        const result = classifyFailure(null);
+        expect(result.class).toBe("unknown");
+      });
+    });
+
+    describe("confidence scores", () => {
+      it("should have high confidence for exact pattern matches", () => {
+        const result = classifyFailure(
+          new Error("401 Unauthorized"),
+        );
+        expect(result.confidence).toBeGreaterThanOrEqual(0.8);
+      });
+
+      it("should have lower confidence for partial matches", () => {
+        const result = classifyFailure(
+          new Error("maybe unauthorized? not sure"),
+        );
+        expect(result.confidence).toBeGreaterThan(0);
+        expect(result.confidence).toBeLessThanOrEqual(1);
+      });
+    });
+
+    describe("evidence extraction", () => {
+      it("should extract evidence from error message", () => {
+        const result = classifyFailure(
+          new Error("401 Unauthorized: token expired"),
+        );
+        expect(result.evidence.length).toBeGreaterThan(0);
+      });
+
+      it("should include multiple evidence items for multi-pattern matches", () => {
+        const result = classifyFailure(
+          new Error("401 Unauthorized: authentication required, token expired"),
+        );
+        expect(result.evidence.length).toBeGreaterThanOrEqual(1);
+      });
+    });
+
+    describe("suggested recovery", () => {
+      it("should suggest recovery steps for auth failures", () => {
+        const result = classifyFailure(
+          new Error("401 Unauthorized"),
+        );
+        expect(result.suggestedRecovery.length).toBeGreaterThan(0);
+      });
+
+      it("should suggest recovery steps for network failures", () => {
+        const result = classifyFailure(
+          new Error("Connection timed out"),
+        );
+        expect(result.suggestedRecovery.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe("with context", () => {
+      it("should use context nodeId in evidence", () => {
+        const ctx: FailureContext = { nodeId: "fetch-data" };
+        const result = classifyFailure(
+          new Error("Connection refused"),
+          ctx,
+        );
+        expect(result.evidence.some(e => e.includes("fetch-data"))).toBe(true);
+      });
+
+      it("should classify with additional context information", () => {
+        const ctx: FailureContext = {
+          nodeId: "auth-check",
+          attemptNumber: 3,
+        };
+        const result = classifyFailure(
+          new Error("401 Unauthorized"),
+          ctx,
+        );
+        expect(result.class).toBe("auth");
+      });
     });
   });
 });

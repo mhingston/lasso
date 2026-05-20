@@ -1,6 +1,8 @@
 import type { IntentIR, IntentStep, SupportedWorkflowFamily } from "./intent-ir.js";
 import type { CapabilityRegistry } from "../capabilities/types.js";
+import type { EnvironmentModel } from "../environment/types.js";
 import { matchCapabilities } from "../capabilities/matcher.js";
+import { analyzeEnvironment } from "../environment/analyzer.js";
 
 export interface TaskGraph {
   family: SupportedWorkflowFamily;
@@ -10,6 +12,12 @@ export interface TaskGraph {
   capabilityMatch?: {
     matched: string[];
     missing: string[];
+  };
+  environmentAnalysis?: {
+    missingTools: string[];
+    highRiskConstraints: string[];
+    readinessScore: number;
+    preparatorySteps: string[];
   };
 }
 
@@ -95,9 +103,36 @@ function buildCapabilityStages(intent: IntentIR, registry: CapabilityRegistry): 
   return { stages, matched: matched.map(c => c.id), missing };
 }
 
-export function buildTaskGraph(intent: IntentIR, registry?: CapabilityRegistry): TaskGraph {
+export function buildTaskGraph(
+  intent: IntentIR,
+  registry?: CapabilityRegistry,
+  environment?: EnvironmentModel
+): TaskGraph {
   const stages: WorkflowStage[] = [];
   let capabilityMatch: { matched: string[]; missing: string[] } | undefined;
+  let environmentAnalysis: TaskGraph["environmentAnalysis"];
+
+  if (environment) {
+    const analysis = analyzeEnvironment(environment);
+    const { matchedTools, missingTools, highRiskConstraints, readinessScore, preparatorySteps } = analysis;
+
+    environmentAnalysis = {
+      missingTools,
+      highRiskConstraints,
+      readinessScore,
+      preparatorySteps,
+    };
+
+    if (preparatorySteps.length > 0) {
+      stages.push({
+        id: "environment-prep",
+        type: "setup",
+        dependencies: [],
+        description: `Prepare environment: ${preparatorySteps.join("; ")}`,
+        requiredInputs: [],
+      });
+    }
+  }
 
   const hasCapabilities = intent.capabilities && intent.capabilities.length > 0;
   const useCapabilityPath = hasCapabilities && registry;
@@ -226,6 +261,7 @@ export function buildTaskGraph(intent: IntentIR, registry?: CapabilityRegistry):
     stages,
     inputs: intent.inputs,
     goal: intent.goal,
-    capabilityMatch
+    capabilityMatch,
+    environmentAnalysis,
   };
 }
