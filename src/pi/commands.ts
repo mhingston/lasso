@@ -9,6 +9,7 @@ import type { ReplanResult } from "../replanner/types.js";
 import type { HarnessSpec } from "../spec/types.js";
 import { parseCommandTarget, type ParsedCommandTarget } from "./command-input.js";
 import { buildReferenceHarnessSpec, type ReferenceWorkflowRequest } from "../reference/catalog.js";
+import { prepareInitialAdaptiveInput } from "../replanner/runtime.js";
 
 const compiledHarnesses = new Map<string, CompiledHarnessWorkflow>();
 let lastCompiledHarnessName: string | undefined;
@@ -59,8 +60,12 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
           return;
         }
 
+        const runtimeInput = target.kind === "reference"
+          ? prepareInitialAdaptiveInput(target.request, compiled.spec, target.runtimeInput)
+          : target.runtimeInput;
+
         const instanceId = randomUUID();
-        await client.startOrchestration(instanceId, compiled.name, target.runtimeInput);
+        await client.startOrchestration(instanceId, compiled.name, runtimeInput);
         ctx.ui.notify(`Started \`${compiled.name}\` (${instanceId})`, "info");
       } catch (error) {
         ctx.ui.notify(formatCommandError(error), "error");

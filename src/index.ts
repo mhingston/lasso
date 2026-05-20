@@ -17,6 +17,8 @@ export type { IntentIR, IntentParseResult, SupportedWorkflowFamily } from "./syn
 export type { TaskGraph as SynthesisTaskGraph, WorkflowStage } from "./synthesis/graph-builder.js";
 export type { RiskModel, StageRisk } from "./synthesis/risk-analyzer.js";
 export type { PolicyBundle, PolicyResult } from "./synthesis/policy-builder.js";
+export type { HarnessVersion, LineageEntry } from "./versioning/types.js";
+export type { AdaptiveRuntimeMetadata, AdaptiveRuntimeInput, RuntimeReplanDecision } from "./replanner/runtime.js";
 export { validateHarnessSpec } from "./spec/validate.js";
 export { lowerHarnessSpecToCir } from "./cir/lower.js";
 export { compileHarnessSpec } from "./compiler/compile.js";
@@ -32,4 +34,6 @@ export { buildTaskGraph } from "./synthesis/graph-builder.js";
 export { analyzeRisks } from "./synthesis/risk-analyzer.js";
 export { synthesizePolicy } from "./synthesis/policy-builder.js";
 export { synthesizeHarness } from "./synthesis/harness-builder.js";
+export { createInitialVersion, createNextVersion, createLineageEntry } from "./versioning/history.js";
+export { prepareInitialAdaptiveInput, unwrapAdaptiveInput, prepareRuntimeReplan, MAX_ADAPTIVE_VERSIONS } from "./replanner/runtime.js";
 export { default } from "./pi/extension.js";

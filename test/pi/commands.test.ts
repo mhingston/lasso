@@ -182,7 +182,17 @@ describe("Lasso pi commands", () => {
     expect(buildReferenceHarnessSpec).toHaveBeenCalledWith({ workflow: "pr-review-merge", input: prBundle });
     expect(compileHarnessSpec).toHaveBeenCalledWith(prSpec);
     expect(prCompiled.register).toHaveBeenCalledWith();
-    expect(registry.client.startOrchestration).toHaveBeenCalledWith("instance-123", "pr-review-merge", {});
+    
+    const startOrchestrationCall = vi.mocked(registry.client.startOrchestration).mock.calls[0];
+    expect(startOrchestrationCall[0]).toBe("instance-123");
+    expect(startOrchestrationCall[1]).toBe("pr-review-merge");
+    
+    const adaptiveInput = startOrchestrationCall[2];
+    expect(adaptiveInput).toHaveProperty("input");
+    expect(adaptiveInput).toHaveProperty("__lassoAdaptiveRuntime");
+    expect(adaptiveInput.input).toEqual({});
+    expect(adaptiveInput.__lassoAdaptiveRuntime.currentRequest).toEqual({ workflow: "pr-review-merge", input: prBundle });
+    
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Started `pr-review-merge`"), "info");
   });
 
@@ -199,7 +209,17 @@ describe("Lasso pi commands", () => {
 
     expect(buildReferenceHarnessSpec).toHaveBeenCalledWith(patchRequest);
     expect(patchCompiled.register).toHaveBeenCalledWith();
-    expect(registry.client.startOrchestration).toHaveBeenCalledWith("instance-123", "patch-validation", {});
+    
+    const startOrchestrationCall = vi.mocked(registry.client.startOrchestration).mock.calls[0];
+    expect(startOrchestrationCall[0]).toBe("instance-123");
+    expect(startOrchestrationCall[1]).toBe("patch-validation");
+    
+    const adaptiveInput = startOrchestrationCall[2];
+    expect(adaptiveInput).toHaveProperty("input");
+    expect(adaptiveInput).toHaveProperty("__lassoAdaptiveRuntime");
+    expect(adaptiveInput.input).toEqual({});
+    expect(adaptiveInput.__lassoAdaptiveRuntime.currentRequest).toEqual(patchRequest);
+    
     expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("Started `patch-validation`"), "info");
   });
 

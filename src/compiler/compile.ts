@@ -17,6 +17,9 @@ import {
   type ExecutionTraceEntry,
   type VerificationOutcome,
 } from "./runtime-helpers.js";
+import { unwrapAdaptiveInput, prepareRuntimeReplan, type AdaptiveRuntimeMetadata } from "../replanner/runtime.js";
+import type { LineageEntry } from "../versioning/types.js";
+import { buildReferenceHarnessSpec } from "../reference/catalog.js";
 
 export interface CompiledHarnessResult {
   status: "completed";
@@ -25,6 +28,8 @@ export interface CompiledHarnessResult {
   outputs: Record<string, unknown>;
   trace: ExecutionTraceEntry[];
   harnessState: HarnessState;
+  adaptiveMetadata?: AdaptiveRuntimeMetadata;
+  lineage?: LineageEntry[];
 }
 
 export interface CompiledHarnessWorkflow {
@@ -64,7 +69,7 @@ export function compileHarnessSpec(spec: HarnessSpec): CompiledHarnessWorkflow {
   const workflows: RegisteredWorkflow[] = [
     {
       name: compiledCir.name,
-      generator: createWorkflowGenerator(compiledCir, nodeMap, outgoingTransitions, parallelMergePlans),
+      generator: createWorkflowGenerator(compiledCir, nodeMap, outgoingTransitions, parallelMergePlans, compiledSpec, compiledCir),
       options: buildWorkflowOptions(compiledSpec),
       sourceInfo: {
         source: "lasso",
@@ -90,29 +95,59 @@ function createWorkflowGenerator(
   nodeMap: Map<string, CirNode>,
   outgoingTransitions: Map<string, CirTransition[]>,
   parallelMergePlans: Map<string, ParallelMergePlan>,
+  compiledSpec: HarnessSpec,
+  compiledCir: CirWorkflow,
 ) {
   return function* compiledHarnessWorkflow(
     ctx: WorkflowContext,
     input: unknown,
   ): Generator<YieldItem, CompiledHarnessResult, unknown> {
+    const unwrapped = unwrapAdaptiveInput(input);
+    const adaptiveMetadata = unwrapped.hasAdaptive ? unwrapped.metadata : undefined;
+    const workflowInput = unwrapped.input;
+    const effectiveSpec = adaptiveMetadata?.currentVersion.spec ?? compiledSpec;
+    const effectiveCir = adaptiveMetadata ? lowerHarnessSpecToCir(effectiveSpec) : compiledCir;
+
+    if (adaptiveMetadata) {
+      const specValidation = validateHarnessSpec(effectiveSpec);
+      if (!specValidation.valid) {
+        throw new Error(`Adaptive HarnessSpec validation failed:\n- ${specValidation.errors.join("\n- ")}`);
+      }
+
+      const cirValidation = validateCirWorkflow(effectiveCir);
+      if (!cirValidation.valid) {
+        throw new Error(`Adaptive CIR validation failed:\n- ${cirValidation.errors.join("\n- ")}`);
+      }
+    }
+
+    const effectiveNodeMap = adaptiveMetadata ? new Map(effectiveCir.nodes.map(node => [node.id, node])) : nodeMap;
+    const effectiveOutgoingTransitions = adaptiveMetadata ? buildTransitionMap(effectiveCir.transitions) : outgoingTransitions;
+    const effectiveParallelMergePlans = adaptiveMetadata ? buildParallelMergePlans(effectiveCir, effectiveNodeMap, effectiveOutgoingTransitions) : parallelMergePlans;
+
+    if (adaptiveMetadata) {
+      const adaptiveIncomingTransitions = buildIncomingTransitionMap(effectiveCir.transitions);
+      validateVerificationSupport(effectiveNodeMap);
+      validateMergeSupport(effectiveNodeMap, adaptiveIncomingTransitions, effectiveParallelMergePlans);
+    }
+
     const startTimeMs = Date.now();
-    const harnessState = createHarnessState(input);
+    const harnessState = createHarnessState(workflowInput);
     const state: ExecutionState = {
-      input,
+      input: workflowInput,
       outputs: {},
       trace: [],
       harnessState,
       startTimeMs,
     };
-    let currentNodeId = cir.entryNodeId;
+    let currentNodeId = effectiveCir.entryNodeId;
 
     while (true) {
-      const node = getNode(nodeMap, currentNodeId);
+      const node = getNode(effectiveNodeMap, currentNodeId);
 
       if (node.kind === "condition") {
         const matched = evaluateConditionExpression(node.action.conditionExpr, state);
         recordTrace(ctx, state, node, matched ? "condition-true" : "condition-false");
-        currentNodeId = getConditionTransition(node, outgoingTransitions, matched).to;
+        currentNodeId = getConditionTransition(node, effectiveOutgoingTransitions, matched).to;
         continue;
       }
 
@@ -124,22 +159,22 @@ function createWorkflowGenerator(
           strategy: node.action.join.strategy,
         });
 
-        const successTransitions = getSuccessTransitions(node.id, outgoingTransitions);
+        const successTransitions = getSuccessTransitions(node.id, effectiveOutgoingTransitions);
         if (successTransitions.length === 0) {
-          return buildCompletedResult(state, node.id);
+          return yield* buildCompletedResultWithContinuation(ctx, state, node.id, adaptiveMetadata);
         }
 
         currentNodeId = successTransitions[0].to;
         continue;
       }
 
-      const output = yield* executeNodeWithPolicies(ctx, state, node, nodeMap, cir.name);
+      const output = yield* executeNodeWithPolicies(ctx, state, node, effectiveNodeMap, effectiveCir.name);
       state.outputs[node.id] = output;
 
-      const parallelMergePlan = parallelMergePlans.get(node.id);
+      const parallelMergePlan = effectiveParallelMergePlans.get(node.id);
       if (parallelMergePlan) {
-        const branchNodes = parallelMergePlan.branchNodeIds.map(branchNodeId => getNode(nodeMap, branchNodeId));
-        const mergeNode = getNode(nodeMap, parallelMergePlan.mergeNodeId);
+        const branchNodes = parallelMergePlan.branchNodeIds.map(branchNodeId => getNode(effectiveNodeMap, branchNodeId));
+        const mergeNode = getNode(effectiveNodeMap, parallelMergePlan.mergeNodeId);
         for (const branchNode of branchNodes) {
           recordTrace(ctx, state, branchNode, "enter", {
             parallel: true,
@@ -149,7 +184,7 @@ function createWorkflowGenerator(
         let branchResults: unknown[];
         try {
           branchResults = (yield ctx.all(
-            branchNodes.map(branchNode => createActionYieldItem(ctx, branchNode, cir.name)),
+            branchNodes.map(branchNode => createActionYieldItem(ctx, branchNode, effectiveCir.name)),
           )) as unknown[];
         } catch (error) {
           state.outputs[mergeNode.id] = {
@@ -174,9 +209,9 @@ function createWorkflowGenerator(
         continue;
       }
 
-      const successTransitions = getSuccessTransitions(node.id, outgoingTransitions);
+      const successTransitions = getSuccessTransitions(node.id, effectiveOutgoingTransitions);
       if (successTransitions.length === 0) {
-        return buildCompletedResult(state, node.id);
+        return yield* buildCompletedResultWithContinuation(ctx, state, node.id, adaptiveMetadata);
       }
 
       currentNodeId = successTransitions[0].to;
@@ -555,7 +590,11 @@ function buildMergeOutput(node: CirMergeNode, outputs: Record<string, unknown>):
   return Object.fromEntries(node.action.join.waitFor.map(waitForNodeId => [waitForNodeId, outputs[waitForNodeId]]));
 }
 
-function buildCompletedResult(state: ExecutionState, terminalNodeId: string): CompiledHarnessResult {
+function buildCompletedResult(
+  state: ExecutionState,
+  terminalNodeId: string,
+  adaptiveMetadata?: AdaptiveRuntimeMetadata,
+): CompiledHarnessResult {
   const endTimeMs = Date.now();
   const durationMs = endTimeMs - state.startTimeMs;
   
@@ -566,8 +605,8 @@ function buildCompletedResult(state: ExecutionState, terminalNodeId: string): Co
   for (const [nodeId, output] of Object.entries(state.outputs)) {
     recordNodeResult(state.harnessState, nodeId, output);
   }
-  
-  return {
+
+  const result: CompiledHarnessResult = {
     status: "completed",
     terminalNodeId,
     result: structuredClone(state.outputs[terminalNodeId]),
@@ -575,6 +614,35 @@ function buildCompletedResult(state: ExecutionState, terminalNodeId: string): Co
     trace: structuredClone(state.trace),
     harnessState: state.harnessState,
   };
+
+  if (adaptiveMetadata) {
+    result.adaptiveMetadata = adaptiveMetadata;
+    result.lineage = adaptiveMetadata.lineage;
+  }
+  
+  return result;
+}
+
+function* buildCompletedResultWithContinuation(
+  ctx: WorkflowContext,
+  state: ExecutionState,
+  terminalNodeId: string,
+  adaptiveMetadata?: AdaptiveRuntimeMetadata,
+): Generator<YieldItem, CompiledHarnessResult, unknown> {
+  const result = buildCompletedResult(state, terminalNodeId, adaptiveMetadata);
+
+  if (adaptiveMetadata) {
+    const replanDecision = prepareRuntimeReplan(adaptiveMetadata, state.input, result);
+
+    if (replanDecision.decision === "continue_as_new") {
+      ctx.traceInfo(`Lasso adaptive runtime: continuing as new with version ${replanDecision.nextVersion.version}`);
+      yield ctx.continueAsNew(replanDecision.nextInput);
+    } else {
+      ctx.traceInfo(`Lasso adaptive runtime: ${replanDecision.decision}`);
+    }
+  }
+
+  return result;
 }
 
 function formatUnknownError(error: unknown): string {
