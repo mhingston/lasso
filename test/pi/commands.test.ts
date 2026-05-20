@@ -300,6 +300,73 @@ describe("Lasso pi commands", () => {
     );
   });
 
+  it("inspect command displays adaptive lineage when available", async () => {
+    const adaptiveCompiled = {
+      ...prCompiled,
+      adaptive: {
+        currentVersion: {
+          version: 3,
+          parentVersion: 2,
+          reason: "risk-escalation: verification failures detected",
+          spec: prSpec,
+          generatedAt: 1700000002000,
+        },
+        lineage: [
+          {
+            version: 1,
+            terminalNodeId: "merged",
+            outputs: {},
+            nodeResults: {},
+            failures: [],
+            metrics: { retries: 0, durationMs: 1500 },
+            trace: [],
+            completedAt: 1700000000000,
+          },
+          {
+            version: 2,
+            terminalNodeId: "failed-verification",
+            outputs: {},
+            nodeResults: {},
+            failures: [
+              {
+                domainType: "lasso",
+                rootCause: "verification_failed",
+                nodeId: "run-checks",
+                message: "Tests failed on candidate branch",
+              },
+            ],
+            metrics: { retries: 2, durationMs: 4500 },
+            trace: [],
+            completedAt: 1700000001000,
+          },
+        ],
+      },
+    };
+
+    vi.mocked(compileHarnessSpec).mockReturnValue(adaptiveCompiled as any);
+
+    const registry = createMockRegistry();
+    const commands = createLassoCommands(registry as any);
+    const compileCommand = commands.find(command => command.name === "lasso:compile");
+    const inspectCommand = commands.find(command => command.name === "lasso:inspect");
+    const ctx = createCommandContext();
+
+    await compileCommand?.handler(JSON.stringify(prBundle), ctx as any);
+    await inspectCommand?.handler("pr-review-merge", ctx as any);
+
+    const notifyCalls = vi.mocked(ctx.ui.notify).mock.calls;
+    const output = notifyCalls[notifyCalls.length - 1][0] as string;
+
+    expect(output).toContain("#### Adaptive Lineage");
+    expect(output).toContain("Version: 3");
+    expect(output).toContain("Parent: 2");
+    expect(output).toContain("Reason: risk-escalation: verification failures detected");
+    expect(output).toContain("| # | Outcome | Duration | Failures | Needs Input |");
+    expect(output).toContain("| 1 | merged | 1.5s | 0 | no |");
+    expect(output).toContain("| 2 | failed-verification | 4.5s | 1 | no |");
+    expect(output).toContain("Status: evolving (version 3 of 5)");
+  });
+
   it("compile command reports malformed JSON cleanly", async () => {
     const commands = createLassoCommands(createMockRegistry() as any);
     const compileCommand = commands.find(command => command.name === "lasso:compile");

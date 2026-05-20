@@ -467,29 +467,28 @@ describe("planWorkflowRequest", () => {
       }
     });
 
-    it("rejects brief with no workflow signals", () => {
+    it("accepts brief with no workflow signals as custom", () => {
       const brief = `
         repoPath: /code/app
         Do some work on the codebase
       `;
       
       const result = planWorkflowRequest(brief);
-      expect(result.status).toBe("needs_clarification");
+      expect(result.status).toBe("draft_request");
       
-      if (result.status === "needs_clarification") {
-        expect(result.reasons[0]).toContain("Could not determine workflow type");
-        expect(result.candidateWorkflow).toBeUndefined();
+      if (result.status === "draft_request") {
+        expect(result.workflow).toBe("custom");
       }
     });
 
-    it("rejects vague request", () => {
+    it("accepts vague request as custom", () => {
       const brief = "Check the code";
       
       const result = planWorkflowRequest(brief);
-      expect(result.status).toBe("needs_clarification");
+      expect(result.status).toBe("draft_request");
       
-      if (result.status === "needs_clarification") {
-        expect(result.missingFields).toContain("workflow type");
+      if (result.status === "draft_request") {
+        expect(result.workflow).toBe("custom");
       }
     });
   });

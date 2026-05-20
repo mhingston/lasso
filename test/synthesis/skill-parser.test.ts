@@ -1,5 +1,9 @@
 import { describe, it, expect } from "vitest";
 import { parsePromptOrSkill, parseSkillMarkdown } from "../../src/synthesis/skill-parser.js";
+import { buildTaskGraph } from "../../src/synthesis/graph-builder.js";
+import { analyzeRisks } from "../../src/synthesis/risk-analyzer.js";
+import { synthesizePolicy } from "../../src/synthesis/policy-builder.js";
+import { synthesizeHarness } from "../../src/synthesis/harness-builder.js";
 
 describe("skill-parser", () => {
   describe("parsePromptOrSkill", () => {
@@ -250,18 +254,18 @@ workflow: pr-review-merge
         }
       });
       
-      it("should reject ambiguous input", () => {
+      it("should accept ambiguous input as custom workflow", () => {
         const brief = "Do something with a repository at /path/to/repo";
         
         const result = parsePromptOrSkill(brief);
         
-        expect(result).toHaveProperty("rejected", true);
-        if ("rejected" in result) {
-          expect(result.reasons.some(r => r.includes("Could not determine workflow type"))).toBe(true);
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.family).toBe("custom");
         }
       });
       
-      it("should reject input that mentions unsupported workflow", () => {
+      it("should accept unsupported workflow as custom workflow", () => {
         const brief = `
           workflow: deploy-to-production
           repoPath: /path/to/repo
@@ -269,8 +273,11 @@ workflow: pr-review-merge
         
         const result = parsePromptOrSkill(brief);
         
-        // This should be ambiguous since 'deploy-to-production' doesn't match our indicators
-        expect(result).toHaveProperty("rejected", true);
+        // Now accepted as a custom workflow family
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.family).toBe("deploy-to-production");
+        }
       });
     });
   });
@@ -403,6 +410,252 @@ workflow: pr-review-merge
       }
     });
 
+    describe("steps field mapping to IntentIR", () => {
+      it("should populate intent.steps from skill markdown steps section", () => {
+        const skillMd = `
+# Custom Workflow
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /path/to/repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Validate fix
+
+## Steps
+- [tool] Run npm install
+- [tool] Apply the patch
+- [llm] Summarize changes
+- [human] Review the output
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps).toBeDefined();
+          expect(result.intent.steps).toHaveLength(4);
+        }
+      });
+
+      it("should infer step kind from [tool] prefix", () => {
+        const skillMd = `
+# Test
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Check
+
+## Steps
+- [tool] npm install
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps![0].kind).toBe("tool");
+          expect(result.intent.steps![0].label).toBe("npm install");
+        }
+      });
+
+      it("should infer step kind from [llm] prefix", () => {
+        const skillMd = `
+# Test
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Check
+
+## Steps
+- [llm] Analyze code quality
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps![0].kind).toBe("llm");
+          expect(result.intent.steps![0].label).toBe("Analyze code quality");
+        }
+      });
+
+      it("should infer step kind from [human] prefix", () => {
+        const skillMd = `
+# Test
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Check
+
+## Steps
+- [human] Approve changes
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps![0].kind).toBe("human");
+          expect(result.intent.steps![0].label).toBe("Approve changes");
+        }
+      });
+
+      it("should infer step kind from [condition] prefix", () => {
+        const skillMd = `
+# Test
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Check
+
+## Steps
+- [condition] Tests passed?
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps![0].kind).toBe("condition");
+        }
+      });
+
+      it("should default to tool kind when no prefix is present", () => {
+        const skillMd = `
+# Test
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Check
+
+## Steps
+- npm install
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps![0].kind).toBe("tool");
+          expect(result.intent.steps![0].label).toBe("npm install");
+        }
+      });
+
+      it("should preserve step order", () => {
+        const skillMd = `
+# Test
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Check
+
+## Steps
+- [tool] First step
+- [llm] Second step
+- [human] Third step
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps![0].label).toBe("First step");
+          expect(result.intent.steps![1].label).toBe("Second step");
+          expect(result.intent.steps![2].label).toBe("Third step");
+        }
+      });
+
+      it("should generate unique step ids from label text", () => {
+        const skillMd = `
+# Test
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Check
+
+## Steps
+- [tool] Run tests
+- [tool] Run linter
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps![0].id).not.toBe(result.intent.steps![1].id);
+        }
+      });
+
+      it("should not populate steps when no steps section exists", () => {
+        const skillMd = `
+# Test
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /repo
+- baselineRef: main
+- candidateBranch: fix
+- reproduceCommands: [npm run fail]
+- verificationCommands: [npm test]
+- reviewInstructions: Check
+        `;
+
+        const result = parsePromptOrSkill(skillMd);
+
+        expect(result).toHaveProperty("success", true);
+        if ("success" in result && result.success) {
+          expect(result.intent.steps).toBeUndefined();
+        }
+      });
+    });
+
     it("should normalize single command strings into command arrays", () => {
       const skillMd = `
 # Patch Validation
@@ -426,6 +679,118 @@ workflow: patch-validation
         expect(result.intent.inputs.verificationCommands).toEqual(["npm test"]);
         expect(result.intent.inputs.reviewInstructions).toBe("Validate fix");
       }
+    });
+  });
+
+  describe("full pipeline: skill markdown with steps to harness", () => {
+    it("should compile skill markdown with custom steps all the way to harness spec", () => {
+      const skillMd = `
+# Custom Build Pipeline
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /path/to/repo
+- baselineRef: v1.0.0
+- candidateBranch: fix-branch
+- reproduceCommands: [npm run fail-test]
+- verificationCommands: [npm test]
+- reviewInstructions: Validate the fix
+
+## Steps
+- [tool] npm install
+- [tool] npm run build
+- [llm] Summarize build output
+- [human] Review summary
+
+## Verification
+- npm test
+      `;
+
+      const intentResult = parsePromptOrSkill(skillMd);
+      expect(intentResult).toHaveProperty("success", true);
+
+      if (!("success" in intentResult) || !intentResult.success) return;
+
+      const intent = intentResult.intent;
+      expect(intent.steps).toHaveLength(4);
+
+      const graph = buildTaskGraph(intent);
+      expect(graph.stages.find(s => s.id === "step-1")).toBeDefined();
+      expect(graph.stages.find(s => s.id === "step-4")).toBeDefined();
+
+      const verifyNodes = graph.stages.filter(s => s.id.startsWith("verify-target-"));
+      expect(verifyNodes.length).toBeGreaterThan(0);
+
+      const risks = analyzeRisks(graph);
+      const policyResult = synthesizePolicy(graph, risks);
+      expect(policyResult.success).toBe(true);
+
+      const spec = synthesizeHarness(graph, risks);
+      expect(spec).toBeDefined();
+      expect(spec.graph.nodes.length).toBeGreaterThan(0);
+    });
+
+    it("should still compile bundled patch-validation workflow without steps", () => {
+      const skillMd = `
+# Standard Patch Validation
+
+workflow: patch-validation
+
+## Inputs
+- repoPath: /path/to/repo
+- baselineRef: v1.0.0
+- candidateBranch: fix-branch
+- reproduceCommands: [npm run fail-test]
+- verificationCommands: [npm test]
+- reviewInstructions: Validate the fix
+      `;
+
+      const intentResult = parsePromptOrSkill(skillMd);
+      expect(intentResult).toHaveProperty("success", true);
+
+      if (!("success" in intentResult) || !intentResult.success) return;
+
+      const graph = buildTaskGraph(intentResult.intent);
+      expect(graph.stages.map(s => s.type)).toEqual([
+        "setup", "reproduce", "apply", "verify", "review"
+      ]);
+
+      const risks = analyzeRisks(graph);
+      const spec = synthesizeHarness(graph, risks);
+      expect(spec.graph.entryNodeId).toBe("run-baseline");
+    });
+
+    it("should still compile bundled pr-review-merge workflow without steps", () => {
+      const skillMd = `
+# Standard PR Review
+
+workflow: pr-review-merge
+
+## Inputs
+- repoPath: /path/to/repo
+- sourceBranch: feature
+- targetBranch: main
+- reviewInstructions: Check code quality
+
+## Verification
+- npm test
+- npm run lint
+      `;
+
+      const intentResult = parsePromptOrSkill(skillMd);
+      expect(intentResult).toHaveProperty("success", true);
+
+      if (!("success" in intentResult) || !intentResult.success) return;
+
+      const graph = buildTaskGraph(intentResult.intent);
+      expect(graph.stages.map(s => s.type)).toEqual([
+        "setup", "review", "verify", "merge"
+      ]);
+
+      const risks = analyzeRisks(graph);
+      const spec = synthesizeHarness(graph, risks);
+      expect(spec.graph.entryNodeId).toBe("load-pr");
     });
   });
 });

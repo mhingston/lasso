@@ -1,6 +1,6 @@
 import type { ExtractionResult } from "../planner/types.js";
 import { extractFields } from "../planner/template-rules.js";
-import type { IntentIR, IntentParseResult, SupportedWorkflowFamily } from "./intent-ir.js";
+import type { IntentIR, IntentParseResult, IntentStep, IntentStepKind, SupportedWorkflowFamily } from "./intent-ir.js";
 import { rejectUnsupportedIntent, validateIntent } from "./intent-ir.js";
 
 export interface SkillMarkdown {
@@ -65,7 +65,7 @@ export function parseSkillMarkdown(markdown: string): SkillMarkdown {
   return skill;
 }
 
-function extractionResultToIntentIR(extracted: ExtractionResult): IntentParseResult {
+function extractionResultToIntentIR(extracted: ExtractionResult, workflowOverride?: string): IntentParseResult {
   if (extracted.template === "ambiguous") {
     return rejectUnsupportedIntent(
       ["Could not determine workflow type - brief matches multiple or no workflow patterns"],
@@ -78,13 +78,17 @@ function extractionResultToIntentIR(extracted: ExtractionResult): IntentParseRes
     );
   }
   
-  const family = extracted.template as SupportedWorkflowFamily;
+  const family = extracted.template === "custom" 
+    ? (workflowOverride || "custom")
+    : extracted.template;
   
   const intent: IntentIR = {
     family,
     goal: family === "pr-review-merge" 
       ? "Review and merge PR" 
-      : "Validate patch against baseline",
+      : family === "patch-validation"
+        ? "Validate patch against baseline"
+        : `Execute ${family} workflow`,
     inputs: {},
     requiredTools: ["git"],
     humanCheckpoints: [],
@@ -126,6 +130,35 @@ function extractionResultToIntentIR(extracted: ExtractionResult): IntentParseRes
   }
   
   return { success: true, intent };
+}
+
+function parseSkillSteps(steps: string[]): IntentStep[] {
+  return steps.map((raw, index) => {
+    let kind: IntentStepKind = "tool";
+    let label = raw.trim();
+
+    const kindMatch = label.match(/^\[(tool|llm|human|condition)\]\s*/i);
+    if (kindMatch) {
+      kind = kindMatch[1].toLowerCase() as IntentStepKind;
+      label = label.slice(kindMatch[0].length).trim();
+    }
+
+    const id = `step-${index + 1}`;
+
+    const step: IntentStep = { id, label, kind };
+
+    if (kind === "tool") {
+      step.command = label;
+    } else if (kind === "llm") {
+      step.prompt = label;
+    } else if (kind === "human") {
+      step.description = label;
+    } else if (kind === "condition") {
+      step.description = label;
+    }
+
+    return step;
+  });
 }
 
 function normalizeInputValue(value: unknown): unknown {
@@ -291,6 +324,10 @@ function skillMarkdownToIntentIR(skill: SkillMarkdown): IntentParseResult {
         verificationTargets: verificationCommands
       };
       
+      if (skill.steps && skill.steps.length > 0) {
+        intent.steps = parseSkillSteps(skill.steps);
+      }
+      
       const validation = validateIntent(intent);
       if (validation) {
         return validation;
@@ -308,6 +345,10 @@ function skillMarkdownToIntentIR(skill: SkillMarkdown): IntentParseResult {
         humanCheckpoints: [],
         verificationTargets: verificationCommands
       };
+      
+      if (skill.steps && skill.steps.length > 0) {
+        intent.steps = parseSkillSteps(skill.steps);
+      }
       
       if (normalizedInputs.approvalRequired === true) {
         intent.humanCheckpoints.push("approval-gate");
@@ -343,6 +384,27 @@ function skillMarkdownToIntentIR(skill: SkillMarkdown): IntentParseResult {
   
   // Parse using existing extraction logic
   const extracted = extractFields(reconstructedBrief);
+  
+  // If the template is "custom" but we have an explicit workflow name, use it directly
+  if (extracted.template === "custom" && skill.workflow) {
+    const { normalizedInputs, verificationCommands } = normalizeAndMergeVerification(skill);
+    
+    const intent: IntentIR = {
+      family: skill.workflow,
+      goal: `Execute ${skill.workflow} workflow`,
+      inputs: normalizedInputs,
+      requiredTools: ["git"],
+      humanCheckpoints: [],
+      verificationTargets: verificationCommands
+    };
+    
+    if (skill.steps && skill.steps.length > 0) {
+      intent.steps = parseSkillSteps(skill.steps);
+    }
+    
+    return { success: true, intent };
+  }
+  
   return extractionResultToIntentIR(extracted);
 }
 
@@ -365,5 +427,15 @@ export function parsePromptOrSkill(input: string): IntentParseResult {
   
   // Otherwise treat as freeform brief
   const extracted = extractFields(input);
-  return extractionResultToIntentIR(extracted);
+  
+  // If the template is "custom", try to extract the explicit workflow name
+  let workflowOverride: string | undefined;
+  if (extracted.template === "custom") {
+    const workflowMatch = input.match(/workflow:\s*(.+)/i);
+    if (workflowMatch) {
+      workflowOverride = workflowMatch[1].trim();
+    }
+  }
+  
+  return extractionResultToIntentIR(extracted, workflowOverride);
 }

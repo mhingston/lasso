@@ -40,8 +40,8 @@ export function classifyTemplate(brief: string): WorkflowTemplate {
     return "patch-validation";
   }
   
-  // If no strong signals, it's ambiguous
-  return "ambiguous";
+  // If no strong signals, it's a custom workflow
+  return "custom";
 }
 
 export function extractFields(brief: string): ExtractionResult {

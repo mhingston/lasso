@@ -1,4 +1,15 @@
-export type SupportedWorkflowFamily = "patch-validation" | "pr-review-merge";
+export type SupportedWorkflowFamily = string;
+
+export type IntentStepKind = "tool" | "llm" | "human" | "condition";
+
+export interface IntentStep {
+  id: string;
+  label: string;
+  kind: IntentStepKind;
+  command?: string;
+  prompt?: string;
+  description?: string;
+}
 
 export interface IntentIR {
   family: SupportedWorkflowFamily;
@@ -7,6 +18,7 @@ export interface IntentIR {
   requiredTools: string[];
   humanCheckpoints: string[];
   verificationTargets: string[];
+  steps?: IntentStep[];
 }
 
 export interface UnsupportedIntentRejection {
@@ -21,17 +33,12 @@ export type IntentParseResult =
   | UnsupportedIntentRejection;
 
 export function validateIntent(intent: IntentIR): UnsupportedIntentRejection | null {
-  const supportedFamilies: SupportedWorkflowFamily[] = ["patch-validation", "pr-review-merge"];
-  
-  if (!supportedFamilies.includes(intent.family)) {
+  if (!intent.family || typeof intent.family !== "string" || intent.family.trim().length === 0) {
     return {
       rejected: true,
-      reasons: [`Workflow family "${intent.family}" is not supported`],
-      candidateFamily: intent.family,
+      reasons: ["Workflow family is missing or empty"],
       guidance: [
-        "Supported workflow families:",
-        "- patch-validation: Validate a fix against a baseline",
-        "- pr-review-merge: Review and merge a pull request"
+        "Please specify a workflow family (e.g., 'patch-validation', 'pr-review-merge', or any custom name)"
       ]
     };
   }
@@ -49,9 +56,7 @@ export function rejectUnsupportedIntent(
     reasons,
     candidateFamily,
     guidance: guidance || [
-      "Please specify a workflow that matches either:",
-      "- patch-validation: Validate a fix against a baseline",
-      "- pr-review-merge: Review and merge a pull request"
+      "Please specify a workflow family with the required inputs for that workflow type"
     ]
   };
 }

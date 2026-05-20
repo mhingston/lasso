@@ -37,6 +37,10 @@ export interface CompiledHarnessWorkflow {
   spec: HarnessSpec;
   cir: CirWorkflow;
   workflows: RegisteredWorkflow[];
+  adaptive?: {
+    currentVersion: { version: number; parentVersion?: number; reason: string };
+    lineage: LineageEntry[];
+  };
   register(pi?: ExtensionAPI): void;
 }
 

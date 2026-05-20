@@ -5,7 +5,8 @@ import type { LocalCandidateSource, LocalPatchValidationBundle, LocalPrBundle } 
 
 export type ReferenceWorkflowRequest =
   | { workflow: "pr-review-merge"; input: LocalPrBundle }
-  | { workflow: "patch-validation"; input: LocalPatchValidationBundle };
+  | { workflow: "patch-validation"; input: LocalPatchValidationBundle }
+  | { workflow: string; input: Record<string, unknown> };
 
 export function parseWorkflowRequest(args: string): ReferenceWorkflowRequest {
   const trimmed = args.trim();
@@ -43,6 +44,15 @@ export function parseWorkflowRequest(args: string): ReferenceWorkflowRequest {
       return { workflow: "patch-validation", input: record.input };
     }
 
+    // Generic fallback for arbitrary workflow families
+    if (typeof workflow === "string" && workflow.trim().length > 0) {
+      const input = record.input;
+      if (!input || typeof input !== "object") {
+        throw new Error(`Invalid input for workflow: ${workflow}`);
+      }
+      return { workflow, input: input as Record<string, unknown> };
+    }
+
     throw new Error(`Unknown workflow: ${String(workflow)}`);
   }
 
@@ -56,9 +66,27 @@ export function parseWorkflowRequest(args: string): ReferenceWorkflowRequest {
 
 export function buildReferenceHarnessSpec(request: ReferenceWorkflowRequest): HarnessSpec {
   if (request.workflow === "pr-review-merge") {
-    return buildPrReviewMergeHarnessSpec(request.input);
+    return buildPrReviewMergeHarnessSpec(request.input as LocalPrBundle);
   }
-  return buildPatchValidationHarnessSpec(request.input);
+  if (request.workflow === "patch-validation") {
+    return buildPatchValidationHarnessSpec(request.input as LocalPatchValidationBundle);
+  }
+  // Generic fallback for custom workflows
+  const entryId = `${request.workflow}-entry`;
+  return {
+    name: request.workflow,
+    graph: {
+      entryNodeId: entryId,
+      nodes: [{
+        id: entryId,
+        label: `Execute ${request.workflow}`,
+        kind: "tool",
+        tool: "echo",
+        args: [`Running ${request.workflow} workflow`],
+      }],
+      edges: [],
+    },
+  };
 }
 
 function isLocalPrBundle(value: Record<string, unknown>): value is LocalPrBundle {

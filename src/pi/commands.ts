@@ -7,6 +7,7 @@ import type { PlannerResult } from "../planner/types.js";
 import { parseReplanRequest, replanWorkflowRequest } from "../replanner/synthesize.js";
 import type { ReplanResult } from "../replanner/types.js";
 import type { HarnessSpec } from "../spec/types.js";
+import { MAX_ADAPTIVE_VERSIONS } from "../replanner/runtime.js";
 import { parseCommandTarget, type ParsedCommandTarget } from "./command-input.js";
 import { buildReferenceHarnessSpec, type ReferenceWorkflowRequest } from "../reference/catalog.js";
 import { prepareInitialAdaptiveInput } from "../replanner/runtime.js";
@@ -99,27 +100,59 @@ export function createLassoCommands(registry: WorkflowRegistry): RegisteredComma
           return !record.name || record.name === compiled.name;
         });
 
-        ctx.ui.notify(
-          [
-            `### Lasso Workflow \`${compiled.name}\``,
+        const lines = [
+          `### Lasso Workflow \`${compiled.name}\``,
+          "",
+          "#### Spec",
+          "```json",
+          JSON.stringify(compiled.spec, null, 2),
+          "```",
+          "",
+          "#### CIR",
+          "```json",
+          JSON.stringify(compiled.cir, null, 2),
+          "```",
+          "",
+          "#### Runtime State",
+          "```json",
+          JSON.stringify(matchingInstances, null, 2),
+          "```",
+        ];
+
+        if (compiled.adaptive) {
+          const { currentVersion, lineage } = compiled.adaptive;
+          lines.push(
             "",
-            "#### Spec",
-            "```json",
-            JSON.stringify(compiled.spec, null, 2),
-            "```",
+            "#### Adaptive Lineage",
             "",
-            "#### CIR",
-            "```json",
-            JSON.stringify(compiled.cir, null, 2),
-            "```",
-            "",
-            "#### Runtime State",
-            "```json",
-            JSON.stringify(matchingInstances, null, 2),
-            "```",
-          ].join("\n"),
-          "info",
-        );
+            `Version: ${currentVersion.version}`,
+            `Parent: ${currentVersion.parentVersion ?? "none"}`,
+            `Reason: ${currentVersion.reason}`,
+          );
+
+          if (lineage.length > 0) {
+            lines.push(
+              "",
+              "| # | Outcome | Duration | Failures | Needs Input |",
+              "|---|---------|----------|----------|-------------|",
+            );
+
+            for (const entry of lineage) {
+              const duration = entry.metrics.durationMs >= 1000
+                ? `${(entry.metrics.durationMs / 1000).toFixed(1)}s`
+                : `${entry.metrics.durationMs}ms`;
+              const needsInput = entry.failures.some(f => f.rootCause === "human_block") ? "yes" : "no";
+              lines.push(
+                `| ${entry.version} | ${entry.terminalNodeId} | ${duration} | ${entry.failures.length} | ${needsInput} |`,
+              );
+            }
+          }
+
+          const status = currentVersion.version >= MAX_ADAPTIVE_VERSIONS ? "stopped" : `evolving (version ${currentVersion.version} of ${MAX_ADAPTIVE_VERSIONS})`;
+          lines.push("", `Status: ${status}`);
+        }
+
+        ctx.ui.notify(lines.join("\n"), "info");
       } catch (error) {
         ctx.ui.notify(formatCommandError(error), "error");
       }

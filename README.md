@@ -49,6 +49,8 @@ Then, inside pi:
 - [Why Lasso exists](#why-lasso-exists)
 - [Example use cases](#example-use-cases)
 - [What Lasso does](#what-lasso-does)
+- [Adaptive runtime](#adaptive-runtime)
+- [Lineage persistence](#lineage-persistence)
 - [When to use Lasso](#when-to-use-lasso)
 - [Does it work with any workflow?](#does-it-work-with-any-workflow)
 - [Bundled workflows](#bundled-workflows)
@@ -89,9 +91,8 @@ Lasso is a good fit when you want things like:
 3. **Compile and run your own workflow** — author a custom `HarnessSpec` and execute it through `/lasso:compile` and `/lasso:run`.
 
 Longer-term, the direction is to make it easier to go from **intent -> workflow**.
-Today that is only partially implemented: planning and replanning work for the
-two bundled workflow families, while arbitrary workflows still need a manual
-`HarnessSpec`.
+The planner now accepts arbitrary workflow families via skill markdown or
+freeform briefs, in addition to the two bundled workflows.
 
 ## What Lasso does
 
@@ -108,6 +109,123 @@ Out of the box, it also ships with operator-ready local workflows and commands:
 The current emphasis is **local, deterministic, reviewable automation** rather
 than fully autonomous hosted integrations.
 
+## Adaptive runtime
+
+Reference workflows (`patch-validation`, `pr-review-merge`) run through
+`/lasso:run` automatically get adaptive behavior. The runtime wraps the
+workflow input with a `__lassoAdaptiveRuntime` metadata envelope that tracks
+version lineage and enables automatic replanning after each run completes.
+
+This means a reference workflow can evolve across multiple attempts without
+manual intervention -- if the first attempt fails, the replanner decides
+whether to retry with a revised spec, halt for operator input, or stop.
+
+### How it works
+
+Each run through the adaptive runtime goes through four stages:
+
+1. **Version tracking** -- Every run gets a `HarnessVersion` record with a
+   version number, parent version, the reason for the version, the full spec,
+   and a timestamp. The first run starts at version 1.
+
+2. **Workflow execution** -- The workflow runs normally on `pi-duroxide`. If
+   the runtime detects an adaptive envelope in the input, it re-lowers the
+   spec from the current version (allowing compiler-driven spec overrides).
+
+3. **Lineage recording** -- When the workflow reaches a terminal node, the
+   runtime creates a `LineageEntry` capturing outputs, per-node results,
+   failures, metrics (duration, retry count), and the execution trace.
+
+4. **Automatic replanning** -- The runtime replanner inspects the result and
+   decides one of:
+   - `continue_as_new` -- the workflow evolves and re-runs automatically
+     with a new spec (up to the version cap)
+   - `needs_operator_input` -- halts and waits for a human to provide new
+     information
+   - `stop` -- terminates evolution (including when the version cap is hit)
+
+When `continue_as_new` fires, the compiler re-executes with the override spec
+from the replanner's draft, producing a new workflow version without manual
+compile or run steps.
+
+### Version cap
+
+Adaptive evolution is capped at **5 versions** (`MAX_ADAPTIVE_VERSIONS`). This
+prevents unbounded automatic mutation. Once the cap is reached, the runtime
+returns `stop` and requires manual intervention. The cap exists because
+unbounded automatic spec changes carry risk -- after 5 attempts the operator
+should review the lineage and decide the next step.
+
+### Key types
+
+```typescript
+interface HarnessVersion {
+  version: number;
+  parentVersion?: number;   // undefined for the initial version
+  reason: string;
+  spec: HarnessSpec;
+  generatedAt: number;      // epoch ms
+}
+
+interface LineageEntry {
+  version: number;
+  terminalNodeId: string;
+  outputs: Record<string, unknown>;
+  nodeResults: Record<string, unknown>;
+  failures: HarnessState["failures"];
+  metrics: HarnessState["metrics"];
+  trace: ExecutionTraceEntry[];
+  completedAt: number;      // epoch ms
+}
+```
+
+Source: `src/versioning/types.ts`, `src/versioning/history.ts`,
+`src/replanner/runtime.ts`.
+
+### Custom workflows are unaffected
+
+Adaptive behavior only activates when the runtime detects a `__lassoAdaptiveRuntime`
+envelope in the workflow input. This envelope is only injected by Lasso for
+reference workflows run through `/lasso:run`. If you compile and run a custom
+`HarnessSpec` directly, no adaptive wrapping occurs and the workflow runs
+exactly once with no replanning.
+
+### Inspecting lineage
+
+Use `/lasso:inspect` to view the compiled spec, CIR, and runtime state for
+the latest or a named workflow. This includes adaptive metadata and lineage
+entries when present.
+
+## Lineage persistence
+
+By default, adaptive runtime lineage is stored in-memory and lost when the
+session ends. To persist lineage across sessions, use `FileLineageStore`:
+
+```typescript
+import { FileLineageStore } from "lasso";
+
+const store = new FileLineageStore("/path/to/store");
+
+// Save versions and lineage entries
+await store.saveVersion(version);
+await store.saveLineage(entry);
+
+// Retrieve
+const v = await store.getVersion(1);
+const chain = await store.getLineageChain(3);
+
+// Query with filters
+const recent = await store.queryLineage({
+  terminalNodeId: "validated-fix",
+  since: Date.now() - 3600_000,
+  limit: 10,
+});
+```
+
+The store writes JSON files to `{storeDir}/versions/` and `{storeDir}/lineage/`.
+The `LineageStore` interface can be implemented for other backends (SQLite,
+remote API, etc.).
+
 ## When to use Lasso
 
 | Goal | Fit | Notes |
@@ -116,35 +234,33 @@ than fully autonomous hosted integrations.
 | Simulate a local PR review + merge flow | Excellent fit | Use `pr-review-merge` |
 | Compile or run your own workflow from CLI or code | Good fit | Use `/lasso:compile`, `/lasso:run`, or the compiler API |
 | Run live GitHub PR automation | Not yet | Lasso is local-only today |
-| Ask Lasso to invent arbitrary new workflows from natural language | Not yet | Planner/replanner only understand bundled workflows |
+| Ask Lasso to invent arbitrary new workflows from natural language | Partial | Planner accepts custom families via skill markdown |
 
 ## Does it work with any workflow?
 
-**Short answer:** yes from `/lasso:compile` and `/lasso:run`, but not from
-`/lasso:plan` or `/lasso:replan`.
+**Short answer:** yes. Lasso supports three paths to a workflow:
 
-Lasso currently has two distinct surfaces:
+| Path | What you provide | What Lasso does |
+| --- | --- | --- |
+| Skill markdown | A markdown document with `## steps` | Parses steps, builds graph, compiles workflow |
+| Freeform brief | An English description | Classifies into a known family or `custom`, extracts fields |
+| Manual `HarnessSpec` | A full spec JSON | Validates, lowers, compiles directly |
 
-| Surface | Scope today |
-| --- | --- |
-| `/lasso:plan`, `/lasso:replan` | Only the bundled `patch-validation` and `pr-review-merge` workflows |
-| `/lasso:compile`, `/lasso:run` | Bundled workflow requests **or** arbitrary `HarnessSpec` workflows |
-| `validateHarnessSpec`, `lowerHarnessSpecToCir`, `compileHarnessSpec` | Any workflow you can express as a valid `HarnessSpec` |
+The two bundled workflows (`patch-validation`, `pr-review-merge`) have
+specialized planners with strict field validation. Custom families get a generic
+pipeline that builds a sequential graph from the parsed steps.
 
-So if you are asking, **"Can Lasso compile or run more than the two examples in
+If you are asking, **"Can Lasso compile or run more than the two examples in
 this repo?"** — yes.
 
-If you are asking, **"Can Lasso plan or replan arbitrary workflows from natural
-language?"** — no, not today. The planner and replanner still only understand
-the bundled workflow families.
+If you are asking, **"Can Lasso plan arbitrary workflows from skill markdown?"**
+— yes. Provide a markdown document with `## steps` and an explicit `workflow`
+name, and Lasso will parse the steps into a graph and compile it.
 
-If you are asking, **"Is the long-term idea prompt/skill -> workflow?"** —
-yes, that is the broader direction. The current shipped state is a narrower,
-safer slice:
-
-1. **plan** a bundled workflow request from a freeform brief
-2. **replan** a bundled workflow request after a concrete outcome
-3. **compile/run** arbitrary workflows only when you already have a `HarnessSpec`
+If you are asking, **"Can Lasso replan arbitrary workflows?"** — the replanner
+still only supports the two bundled families. Custom workflows can use the
+adaptive runtime for automatic version evolution, but the replanner's draft
+logic is limited to `patch-validation` and `pr-review-merge`.
 
 ## Bundled workflows
 
@@ -196,10 +312,14 @@ these commands:
 ### `/lasso:plan`
 
 The planner is deterministic and draft-only. It classifies a freeform brief into
-either `patch-validation` or `pr-review-merge` and returns:
+either `patch-validation`, `pr-review-merge`, or `custom` and returns:
 
 1. a draft workflow request JSON envelope you can pass into `compile` or `run`, or
 2. a clarification result with missing fields and concrete next-step guidance
+
+For the two bundled families, it extracts structured fields with strict
+validation. For custom families (via skill markdown with an explicit `workflow`
+name), it builds a sequential graph from the parsed steps.
 
 It does **not** compile, register, or run anything.
 
@@ -217,7 +337,8 @@ It returns one of three outcomes:
 3. `stop` when auto-retrying would be the wrong move
 
 In v1, the replanner only supports the two bundled workflows. It never invents
-new branch names, candidate sources, or command lists.
+new branch names, candidate sources, or command lists. Custom workflows can use
+the adaptive runtime for automatic version evolution instead.
 
 ### Custom compile/run input shapes
 
@@ -395,8 +516,8 @@ The generic package surface is:
 - `compileHarnessSpec(...)` to produce a replay-safe workflow for `pi-duroxide`
 
 That is the part of Lasso designed to work with **arbitrary workflow shapes**.
-What is still intentionally narrow is the built-in request catalog and the
-natural-language planning/replanning layer.
+The planner now also supports custom families via skill markdown, though the
+replanner is still limited to the two bundled families.
 
 ## HarnessSpec reference
 

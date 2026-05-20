@@ -1,4 +1,4 @@
-import type { IntentIR, SupportedWorkflowFamily } from "./intent-ir.js";
+import type { IntentIR, IntentStep, SupportedWorkflowFamily } from "./intent-ir.js";
 
 export interface TaskGraph {
   family: SupportedWorkflowFamily;
@@ -13,6 +13,21 @@ export interface WorkflowStage {
   dependencies: string[];
   description: string;
   requiredInputs: string[];
+}
+
+function stepKindToStageType(kind: IntentStep["kind"]): WorkflowStage["type"] {
+  switch (kind) {
+    case "tool":
+      return "setup";
+    case "llm":
+      return "review";
+    case "human":
+      return "approval";
+    case "condition":
+      return "verify";
+    default:
+      return "setup";
+  }
 }
 
 export function buildTaskGraph(intent: IntentIR): TaskGraph {
@@ -100,6 +115,35 @@ export function buildTaskGraph(intent: IntentIR): TaskGraph {
       description: "Merge PR",
       requiredInputs: ["sourceBranch", "targetBranch"]
     });
+  }
+  
+  if (intent.steps && intent.steps.length > 0) {
+    for (let i = 0; i < intent.steps.length; i++) {
+      const step = intent.steps[i];
+      const prevStepId = i > 0 ? intent.steps[i - 1].id : undefined;
+
+      stages.push({
+        id: step.id,
+        type: stepKindToStageType(step.kind),
+        dependencies: prevStepId ? [prevStepId] : [],
+        description: step.label,
+        requiredInputs: []
+      });
+    }
+
+    if (intent.verificationTargets.length > 0) {
+      const lastStepId = intent.steps[intent.steps.length - 1].id;
+
+      for (let i = 0; i < intent.verificationTargets.length; i++) {
+        stages.push({
+          id: `verify-target-${i}`,
+          type: "verify",
+          dependencies: [lastStepId],
+          description: `Verify: ${intent.verificationTargets[i]}`,
+          requiredInputs: []
+        });
+      }
+    }
   }
   
   return {

@@ -7,20 +7,20 @@ import type { synthesizePolicy } from "../synthesis/policy-builder.js";
 export type PlannerResult =
   | { 
       status: "draft_request"; 
-      workflow: "patch-validation" | "pr-review-merge";
+      workflow: string;
       request: ReferenceWorkflowRequest;
       rationale: string[];
       warnings: string[];
     }
   | { 
       status: "needs_clarification"; 
-      candidateWorkflow?: "patch-validation" | "pr-review-merge";
+      candidateWorkflow?: string;
       reasons: string[]; 
       missingFields: string[]; 
       guidance: string[];
     };
 
-export type WorkflowTemplate = "patch-validation" | "pr-review-merge" | "ambiguous";
+export type WorkflowTemplate = "patch-validation" | "pr-review-merge" | "custom" | "ambiguous";
 
 export interface ExtractionResult {
   template: WorkflowTemplate;

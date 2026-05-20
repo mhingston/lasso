@@ -30,7 +30,7 @@ export function planWorkflowRequest(brief: string): PlannerResult {
     
     return {
       status: "needs_clarification",
-      candidateWorkflow: parseResult.candidateFamily as "patch-validation" | "pr-review-merge" | undefined,
+      candidateWorkflow: parseResult.candidateFamily,
       reasons: parseResult.reasons,
       missingFields,
       guidance: parseResult.guidance
