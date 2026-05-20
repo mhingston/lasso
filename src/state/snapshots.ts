@@ -2,10 +2,12 @@ import type { FailureRecord } from "../failures/types.js";
 import type { HarnessState } from "./types.js";
 
 export function createHarnessState(input: unknown): HarnessState {
+  const inputs = input && typeof input === "object" && !Array.isArray(input)
+    ? structuredClone(input as Record<string, unknown>)
+    : {};
+  
   return {
-    inputs: input && typeof input === "object" && !Array.isArray(input) 
-      ? { ...input as Record<string, unknown> } 
-      : {},
+    inputs,
     outputs: {},
     nodeResults: {},
     failures: [],

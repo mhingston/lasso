@@ -58,6 +58,23 @@ describe("State snapshots", () => {
       expect(state.metrics.retries).toBe(0);
       expect(state.metrics.durationMs).toBe(0);
     });
+
+    it("should deeply clone nested input objects to prevent external mutation", () => {
+      const input = {
+        config: { debug: true, retries: 3 },
+        data: { items: [1, 2, 3] },
+      };
+      const state = createHarnessState(input);
+
+      // Mutate the original input object
+      (input.config as any).debug = false;
+      (input.config as any).retries = 999;
+      input.data.items.push(4);
+
+      // State should be unaffected
+      expect(state.inputs.config).toEqual({ debug: true, retries: 3 });
+      expect(state.inputs.data).toEqual({ items: [1, 2, 3] });
+    });
   });
 
   describe("addFailure", () => {
