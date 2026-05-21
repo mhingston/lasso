@@ -128,14 +128,30 @@ Validates a candidate fix against a known-bad baseline.
 
 **Terminal outcomes**: `validated-fix`, `not-reproduced`, `apply-failed`, `candidate-failed`, `rejected`
 
-**Input shape**:
+**Input shape** (branch candidate):
 ```json
 {
   "workflow": "patch-validation",
   "input": {
     "repoPath": "/absolute/path/to/disposable-worktree",
     "baselineRef": "main",
-    "candidateSource": { "kind": "branch"|"patchFile", "value": "branch-name" | "/path/to/fix.patch" },
+    "candidateSource": { "kind": "branch", "value": "fix/bug" },
+    "reproduceCommands": ["npm test -- --grep 'the broken test'"],
+    "verificationCommands": ["npm test"],
+    "reviewInstructions": "Approve if the patch applies cleanly and verification passes.",
+    "approvalRequired": false
+  }
+}
+```
+
+**Input shape** (patch file candidate):
+```json
+{
+  "workflow": "patch-validation",
+  "input": {
+    "repoPath": "/absolute/path/to/disposable-worktree",
+    "baselineRef": "main",
+    "candidateSource": { "kind": "patchFile", "value": "/path/to/fix.patch" },
     "reproduceCommands": ["npm test -- --grep 'the broken test'"],
     "verificationCommands": ["npm test"],
     "reviewInstructions": "Approve if the patch applies cleanly and verification passes.",
@@ -174,15 +190,26 @@ Local rehearsal of a review-and-merge flow.
 | `needs_operator_input` | Human must provide missing fields before retry |
 | `stop` | Auto-retrying would be wrong (human rejection, max retries, etc.) |
 
-**Replan input shape**:
+**Replan input shape** (completed attempt):
 ```json
 {
-  "workflow": "patch-validation" | "pr-review-merge",
-  "originalRequest": { "workflow": "...", "input": { ... } },
+  "workflow": "patch-validation",
+  "originalRequest": { "workflow": "patch-validation", "input": { "..." : "..." } },
   "observedOutcome": {
-    "terminalNodeId": "validated-fix" | "...",
-    "notes": ["prod hotfix"],
-    "aborted": false
+    "terminalNodeId": "validated-fix",
+    "notes": ["prod hotfix"]
+  }
+}
+```
+
+**Replan input shape** (aborted attempt):
+```json
+{
+  "workflow": "patch-validation",
+  "originalRequest": { "workflow": "patch-validation", "input": { "..." : "..." } },
+  "observedOutcome": {
+    "aborted": true,
+    "abortReason": "retry-exhaustion"
   }
 }
 ```
