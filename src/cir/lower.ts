@@ -104,6 +104,8 @@ function lowerNode(spec: HarnessSpec, node: TaskNode, index: number, transitions
     ...(node.retryPolicy ? { retry: cloneRetryPolicy(node.retryPolicy) } : {}),
     ...(verification ? { verification } : {}),
     ...(failureRouting ? { failureRouting } : {}),
+    ...(node.guardrails ? { guardrails: { ...node.guardrails } } : {}),
+    ...(node.verificationHooks ? { verificationHooks: node.verificationHooks.map(h => ({ ...h })) } : {}),
     terminal: outgoingCount === 0,
   } as const;
 

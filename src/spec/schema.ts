@@ -35,7 +35,9 @@ export const harnessSpecSchema = {
                   label: { type: "string" },
                   executionPolicy: { $ref: "#/$defs/executionPolicy" },
                   retryPolicy: { $ref: "#/$defs/retryPolicy" },
-                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" }
+                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" },
+                  guardrails: { $ref: "#/$defs/nodeGuardrails" },
+                  verificationHooks: { $ref: "#/$defs/verificationHooks" }
                 }
               },
               {
@@ -54,7 +56,9 @@ export const harnessSpecSchema = {
                   label: { type: "string" },
                   executionPolicy: { $ref: "#/$defs/executionPolicy" },
                   retryPolicy: { $ref: "#/$defs/retryPolicy" },
-                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" }
+                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" },
+                  guardrails: { $ref: "#/$defs/nodeGuardrails" },
+                  verificationHooks: { $ref: "#/$defs/verificationHooks" }
                 }
               },
               {
@@ -70,7 +74,9 @@ export const harnessSpecSchema = {
                   timeout: { type: "number" },
                   label: { type: "string" },
                   executionPolicy: { $ref: "#/$defs/executionPolicy" },
-                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" }
+                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" },
+                  guardrails: { $ref: "#/$defs/nodeGuardrails" },
+                  verificationHooks: { $ref: "#/$defs/verificationHooks" }
                 }
               },
               {
@@ -85,7 +91,9 @@ export const harnessSpecSchema = {
                   elseNodeId: { type: "string", minLength: 1 },
                   label: { type: "string" },
                   executionPolicy: { $ref: "#/$defs/executionPolicy" },
-                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" }
+                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" },
+                  guardrails: { $ref: "#/$defs/nodeGuardrails" },
+                  verificationHooks: { $ref: "#/$defs/verificationHooks" }
                 }
               },
               {
@@ -99,7 +107,9 @@ export const harnessSpecSchema = {
                   strategy: { enum: ["all", "any", "majority"] },
                   label: { type: "string" },
                   executionPolicy: { $ref: "#/$defs/executionPolicy" },
-                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" }
+                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" },
+                  guardrails: { $ref: "#/$defs/nodeGuardrails" },
+                  verificationHooks: { $ref: "#/$defs/verificationHooks" }
                 }
               },
               {
@@ -114,7 +124,9 @@ export const harnessSpecSchema = {
                   label: { type: "string" },
                   executionPolicy: { $ref: "#/$defs/executionPolicy" },
                   retryPolicy: { $ref: "#/$defs/retryPolicy" },
-                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" }
+                  verificationPolicy: { $ref: "#/$defs/verificationPolicy" },
+                  guardrails: { $ref: "#/$defs/nodeGuardrails" },
+                  verificationHooks: { $ref: "#/$defs/verificationHooks" }
                 }
               }
             ]
@@ -247,6 +259,34 @@ export const harnessSpecSchema = {
         logDestinations: {
           type: "array",
           items: { type: "string" }
+        }
+      }
+    },
+    nodeGuardrails: {
+      type: "object",
+      additionalProperties: false,
+      properties: {
+        timeoutSeconds: { type: "number", exclusiveMinimum: 0 },
+        maxRetries: { type: "number", minimum: 0 },
+        maxCostUsd: { type: "number", exclusiveMinimum: 0 },
+        constraints: {
+          type: "array",
+          items: { type: "string", minLength: 1 }
+        }
+      }
+    },
+    verificationHooks: {
+      type: "array",
+      items: {
+        type: "object",
+        required: ["name", "kind", "check", "onFail"],
+        additionalProperties: false,
+        properties: {
+          name: { type: "string", minLength: 1 },
+          kind: { enum: ["tool", "llm", "expression"] },
+          check: { type: "string", minLength: 1 },
+          onFail: { enum: ["block", "warn", "retry"] },
+          maxAttempts: { type: "number", minimum: 1 }
         }
       }
     }

@@ -39,6 +39,7 @@ export { synthesizeHarness } from "./synthesis/harness-builder.js";
 export { createInitialVersion, createNextVersion, createLineageEntry } from "./versioning/history.js";
 export { prepareInitialAdaptiveInput, unwrapAdaptiveInput, prepareRuntimeReplan, MAX_ADAPTIVE_VERSIONS } from "./replanner/runtime.js";
 export type { MetaHarnessConfig, MetaHarnessResult, MetaHarness } from "./metaharness/types.js";
+export type { ExecutionTrace, CompletedNode, FailedNode, HarnessSynthesisResult } from "./metaharness/types.js";
 export { DefaultMetaHarness } from "./metaharness/engine.js";
 export { predictFailuresFromEnvironment } from "./metaharness/predictor.js";
 export { discoverEnvironment } from "./environment/discovery.js";

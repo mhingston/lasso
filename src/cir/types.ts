@@ -5,11 +5,13 @@ import type {
   HumanPolicy,
   LlmNode,
   MergeNode,
+  NodeGuardrails,
   ObservabilityPolicy,
   RetryPolicy,
   SubworkflowNode,
   TaskNode,
   ToolNode,
+  VerificationHook,
   VerificationRule,
 } from "../spec/types.js";
 
@@ -69,6 +71,10 @@ export interface CirNodeBase<K extends TaskNode["kind"] = TaskNode["kind"]> {
   verification?: CirVerificationHook[];
   failureRouting?: CirFailureRoutingHint[];
   terminal?: boolean;
+  /** Per-node guardrails from spec */
+  guardrails?: NodeGuardrails;
+  /** Per-node verification hooks from spec */
+  verificationHooks?: VerificationHook[];
 }
 
 export interface CirToolNode extends CirNodeBase<"tool"> {

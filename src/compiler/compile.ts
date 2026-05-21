@@ -5,6 +5,7 @@ import { lowerHarnessSpecToCir } from "../cir/lower.js";
 import { optimizeCirWorkflow } from "../cir/optimize.js";
 import { validateCirWorkflow } from "../cir/validate.js";
 import type { HarnessSpec } from "../spec/types.js";
+import { buildTraceEntries } from "../metaharness/trace-adapter.js";
 import { validateHarnessSpec } from "../spec/validate.js";
 import { addFailure, createHarnessState, recordNodeResult, updateMetrics } from "../state/snapshots.js";
 import type { HarnessState } from "../state/types.js";
@@ -13,6 +14,7 @@ import {
   checkGuardrails,
   evaluateConditionExpression,
   GuardrailExceededError,
+  isVerificationSuccess,
   recordTrace,
   runWithRetry,
   type ExecutionState,
@@ -22,6 +24,9 @@ import { unwrapAdaptiveInput, prepareRuntimeReplan, type AdaptiveRuntimeMetadata
 import type { LineageEntry } from "../versioning/types.js";
 import type { HarnessExecutionTrace } from "../versioning/types.js";
 import { buildReferenceHarnessSpec } from "../reference/catalog.js";
+import type { ExecutionTrace } from "../metaharness/types.js";
+import { deriveMutationsFromTrace } from "../mutation/derive.js";
+import { mutateHarness } from "../mutation/engine.js";
 
 export interface CompiledHarnessResult {
   status: "completed";
@@ -189,11 +194,52 @@ function createWorkflowGenerator(
         throw new GuardrailExceededError(guardrailResult.reason!);
       }
 
-      const output = yield* executeNodeWithPolicies(ctx, state, node, effectiveNodeMap, effectiveCir.name);
+      // Per-node guardrails: check constraints and cost before execution
+      const specNode = getSpecNode(effectiveSpec, node.id);
+      if (specNode?.guardrails) {
+        checkPerNodeGuardrails(specNode.guardrails, state, node.id);
+      }
+
+      // Per-node timeout: record start time before yield
+      const nodeStartTime = specNode?.guardrails?.timeoutSeconds !== undefined ? Date.now() : undefined;
+      const nodeStartCost = specNode?.guardrails?.maxCostUsd !== undefined ? state.estimatedCostUsd : undefined;
+
+      // Override retry with per-node maxRetries if present
+      const effectiveNode = specNode?.guardrails?.maxRetries !== undefined
+        ? { ...node, retry: { maxAttempts: specNode.guardrails.maxRetries + 1, backoff: node.retry?.backoff ?? "constant", initialDelay: node.retry?.initialDelay ?? 0, maxDelay: node.retry?.maxDelay, retryOn: node.retry?.retryOn } }
+        : node;
+
+      const output = yield* executeNodeWithPolicies(ctx, state, effectiveNode, effectiveNodeMap, effectiveCir.name);
       state.outputs[node.id] = output;
       state.stepCount += 1;
       if (node.kind === "llm") {
         state.estimatedCostUsd += 0.01;
+      }
+
+      // Per-node timeout: check after yield returns
+      if (nodeStartTime !== undefined && specNode?.guardrails?.timeoutSeconds !== undefined) {
+        const elapsedMs = Date.now() - nodeStartTime;
+        const timeoutMs = specNode.guardrails.timeoutSeconds * 1000;
+        if (elapsedMs > timeoutMs) {
+          throw new GuardrailExceededError(
+            `Per-node timeout exceeded for node ${node.id} (${elapsedMs}ms > ${timeoutMs}ms)`,
+          );
+        }
+      }
+
+      // Per-node cost: check delta, not cumulative
+      if (nodeStartCost !== undefined && specNode?.guardrails?.maxCostUsd !== undefined) {
+        const nodeCost = state.estimatedCostUsd - nodeStartCost;
+        if (nodeCost > specNode.guardrails.maxCostUsd) {
+          throw new GuardrailExceededError(
+            `Per-node cost limit exceeded for node ${node.id} ($${nodeCost.toFixed(4)}/$${specNode.guardrails.maxCostUsd.toFixed(2)})`,
+          );
+        }
+      }
+
+      // Per-node verification hooks
+      if (specNode?.verificationHooks && specNode.verificationHooks.length > 0) {
+        yield* runPerNodeVerificationHooks(ctx, state, node, specNode.verificationHooks, effectiveNodeMap);
       }
 
       const parallelMergePlan = effectiveParallelMergePlans.get(node.id);
@@ -582,8 +628,31 @@ function* buildCompletedResultWithContinuation(
     const replanDecision = prepareRuntimeReplan(adaptiveMetadata, state.input, result);
 
     if (replanDecision.decision === "continue_as_new") {
+      const traceMutations = synthesizeTraceMutations(state, adaptiveMetadata);
+
+      let nextInput = replanDecision.nextInput;
+      if (traceMutations.length > 0) {
+        const baseSpec = buildReferenceHarnessSpec(replanDecision.nextRequest);
+        const mutated = mutateHarness(baseSpec, traceMutations);
+        nextInput = {
+          ...nextInput,
+          __lassoAdaptiveRuntime: {
+            ...nextInput.__lassoAdaptiveRuntime,
+            currentVersion: {
+              ...nextInput.__lassoAdaptiveRuntime.currentVersion,
+              spec: mutated.spec,
+            },
+            pendingMutations: [
+              ...(nextInput.__lassoAdaptiveRuntime.pendingMutations ?? []),
+              ...traceMutations,
+            ],
+          },
+        };
+        ctx.traceInfo(`Lasso trace synthesis: applied ${traceMutations.length} mutation(s) from execution trace`);
+      }
+
       ctx.traceInfo(`Lasso adaptive runtime: continuing as new with version ${replanDecision.nextVersion.version}`);
-      yield ctx.continueAsNew(replanDecision.nextInput);
+      yield ctx.continueAsNew(nextInput);
     } else {
       ctx.traceInfo(`Lasso adaptive runtime: ${replanDecision.decision}`);
     }
@@ -598,4 +667,205 @@ function formatUnknownError(error: unknown): string {
   }
 
   return String(error);
+}
+
+// NOTE: Timestamps here are approximations — the total harness duration is
+// applied uniformly to all nodes. Per-node timing should be sourced from
+// trace entries when available.
+function synthesizeTraceMutations(
+  state: ExecutionState,
+  adaptiveMetadata: AdaptiveRuntimeMetadata,
+): ReturnType<typeof deriveMutationsFromTrace> {
+  const executionTrace: ExecutionTrace = {
+    completedNodes: [],
+    failedNodes: [],
+    currentNodeId: undefined,
+    capturedAt: Date.now(),
+  };
+
+  for (const failure of state.harnessState.failures) {
+    executionTrace.failedNodes.push({
+      nodeId: failure.nodeId ?? "unknown",
+      startedAt: Date.now() - (state.harnessState.metrics.durationMs ?? 0),
+      failedAt: Date.now(),
+      error: failure.message,
+      retryCount: 0,
+    });
+  }
+
+  for (const [nodeId, output] of Object.entries(state.harnessState.nodeResults ?? {})) {
+    if (!executionTrace.failedNodes.some(f => f.nodeId === nodeId)) {
+      executionTrace.completedNodes.push({
+        nodeId,
+        startedAt: Date.now() - (state.harnessState.metrics.durationMs ?? 0),
+        completedAt: Date.now(),
+        output,
+      });
+    }
+  }
+
+  const traceEntries = buildTraceEntries(executionTrace);
+
+  if (traceEntries.length === 0) {
+    return [];
+  }
+
+  const harnessTrace: HarnessExecutionTrace = {
+    entries: traceEntries,
+    totalDurationMs: state.harnessState.metrics.durationMs ?? 0,
+    nodeCount: executionTrace.completedNodes.length + executionTrace.failedNodes.length,
+    failureCount: executionTrace.failedNodes.length,
+    startTimeMs: Date.now() - (state.harnessState.metrics.durationMs ?? 0),
+    endTimeMs: Date.now(),
+  };
+
+  return deriveMutationsFromTrace(harnessTrace, adaptiveMetadata.currentVersion.spec);
+}
+
+function getSpecNode(spec: HarnessSpec, nodeId: string): import("../spec/types.js").TaskNode | undefined {
+  return spec.graph.nodes.find(node => node.id === nodeId);
+}
+
+function checkPerNodeGuardrails(
+  guardrails: import("../spec/types.js").NodeGuardrails,
+  state: ExecutionState,
+  nodeId: string,
+): void {
+  if (guardrails.constraints) {
+    for (const constraint of guardrails.constraints) {
+      const result = evaluateConditionExpression(constraint, state);
+      if (!result) {
+        throw new GuardrailExceededError(
+          `Constraint failed for node ${nodeId}: "${constraint}"`,
+        );
+      }
+    }
+  }
+
+
+}
+
+function* runPerNodeVerificationHooks(
+  ctx: WorkflowContext,
+  state: ExecutionState,
+  node: CirNode,
+  hooks: import("../spec/types.js").VerificationHook[],
+  nodeMap: Map<string, CirNode>,
+): Generator<YieldItem, void, unknown> {
+  for (const hook of hooks) {
+    let hookAttempts = 0;
+    const maxAttempts = hook.maxAttempts ?? 2;
+
+    while (true) {
+      if (hook.kind === "expression") {
+        const result = evaluateConditionExpression(hook.check, state);
+        if (result) {
+          break; // Hook passed, move to next hook
+        }
+
+        // Expression failed
+        if (hook.onFail === "block") {
+          throw new Error(
+            `Verification hook "${hook.name}" blocked: expression "${hook.check}" evaluated to false for node ${node.id}`,
+          );
+        }
+        if (hook.onFail === "warn") {
+          ctx.traceWarn(
+            `[lasso] Verification hook "${hook.name}" warning: expression "${hook.check}" evaluated to false for node ${node.id}`,
+          );
+          break; // Warn but continue to next hook
+        }
+        if (hook.onFail === "retry") {
+          hookAttempts++;
+          if (hookAttempts < maxAttempts) {
+            recordTrace(ctx, state, node, "retry", {
+              reason: "verification-hook",
+              hook: hook.name,
+              attemptNumber: hookAttempts + 1,
+            });
+            // Re-execute the node
+            yield* executeNodeWithPolicies(ctx, state, node as Exclude<CirNode, { kind: "condition" | "merge" }>, nodeMap, "current");
+            continue; // Re-check the same hook
+          }
+          throw new Error(
+            `Verification hook "${hook.name}" retry exhausted for node ${node.id}`,
+          );
+        }
+      }
+
+      // For tool/llm hooks, create an inline verifier node
+      const verifierNodeId = `__verify_hook_${hook.name}`;
+      let verifierNode: CirNode;
+
+      if (hook.kind === "llm") {
+        verifierNode = {
+          id: verifierNodeId,
+          kind: "llm",
+          source: {
+            specNodeId: node.id,
+            specNodeKind: node.kind,
+            specPath: `verificationHook:${hook.name}`,
+          },
+          action: {
+            provider: "anthropic",
+            model: "claude-sonnet",
+            prompt: hook.check,
+          },
+        };
+      } else {
+        verifierNode = {
+          id: verifierNodeId,
+          kind: "tool",
+          source: {
+            specNodeId: node.id,
+            specNodeKind: node.kind,
+            specPath: `verificationHook:${hook.name}`,
+          },
+          action: {
+            tool: "bash",
+            args: [hook.check],
+          },
+        };
+      }
+
+      const verifierOutput = yield createActionYieldItem(ctx, verifierNode as Exclude<CirNode, { kind: "condition" | "merge" }>, "current");
+      state.outputs[verifierNodeId] = verifierOutput;
+
+      const passed = isVerificationSuccess(verifierOutput);
+      if (passed) {
+        break; // Hook passed, move to next hook
+      }
+
+      // Verification failed
+      if (hook.onFail === "block") {
+        throw new Error(
+          `Verification hook "${hook.name}" blocked: verifier returned false for node ${node.id}`,
+        );
+      }
+
+      if (hook.onFail === "warn") {
+        ctx.traceWarn(
+          `[lasso] Verification hook "${hook.name}" warning: verifier returned false for node ${node.id}`,
+        );
+        break; // Warn but continue to next hook
+      }
+
+      if (hook.onFail === "retry") {
+        hookAttempts++;
+        if (hookAttempts < maxAttempts) {
+          recordTrace(ctx, state, node, "retry", {
+            reason: "verification-hook",
+            hook: hook.name,
+            attemptNumber: hookAttempts + 1,
+          });
+          // Re-execute the node
+          yield* executeNodeWithPolicies(ctx, state, node as Exclude<CirNode, { kind: "condition" | "merge" }>, nodeMap, "current");
+          continue; // Re-check the same hook
+        }
+        throw new Error(
+          `Verification hook "${hook.name}" retry exhausted for node ${node.id}`,
+        );
+      }
+    }
+  }
 }

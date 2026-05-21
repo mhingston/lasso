@@ -3,11 +3,13 @@ import {
   prepareInitialAdaptiveInput,
   unwrapAdaptiveInput,
   prepareRuntimeReplan,
+  prepareRuntimeReplanWithTraceSynthesis,
   MAX_ADAPTIVE_VERSIONS,
 } from "../../src/replanner/runtime.js";
 import type { ReferenceWorkflowRequest } from "../../src/reference/catalog.js";
 import type { HarnessSpec } from "../../src/spec/types.js";
 import type { CompiledHarnessResult } from "../../src/compiler/compile.js";
+import type { EnvironmentModel } from "../../src/environment/types.js";
 import { createInitialVersion } from "../../src/versioning/history.js";
 
 describe("replanner/runtime", () => {
@@ -201,6 +203,138 @@ describe("replanner/runtime", () => {
         });
 
         expect(decision2.decision).toBe("stop");
+      }
+    });
+  });
+
+  describe("prepareRuntimeReplanWithTraceSynthesis", () => {
+    const mockResult: CompiledHarnessResult = {
+      status: "completed",
+      terminalNodeId: "validated-fix",
+      result: { output: "test" },
+      outputs: { start: { stdout: "test" } },
+      trace: [],
+      harnessState: {
+        inputs: {},
+        outputs: { start: { stdout: "test" } },
+        nodeResults: { start: { stdout: "test" } },
+        failures: [],
+        metrics: { retries: 0, durationMs: 100 },
+      },
+    };
+
+    const mockEnv: EnvironmentModel = {
+      tools: [
+        { name: "bash", version: "5.0", available: true },
+        { name: "git", version: "2.39", available: true },
+      ],
+      resources: [],
+      constraints: [],
+      authState: [],
+      externalSystems: [],
+      discoveredAt: Date.now(),
+    };
+
+    it("should return trace_synthesis decision for successful execution", async () => {
+      const wrapped = prepareInitialAdaptiveInput(mockRequest, mockSpec, {});
+      const adaptive = unwrapAdaptiveInput(wrapped).metadata!;
+
+      const decision = await prepareRuntimeReplanWithTraceSynthesis({
+        adaptive,
+        runtimeInput: {},
+        result: mockResult,
+        environment: mockEnv,
+      });
+
+      expect(decision.decision).toBe("trace_synthesis");
+      if (decision.decision === "trace_synthesis") {
+        expect(decision.synthesisResult).toBeDefined();
+        expect(decision.synthesisResult.decision).toBe("continue");
+        expect(decision.lineageEntry).toBeDefined();
+      }
+    });
+
+    it("should stop when max version limit reached", async () => {
+      const wrapped = prepareInitialAdaptiveInput(mockRequest, mockSpec, {});
+      const adaptive = unwrapAdaptiveInput(wrapped).metadata!;
+      adaptive.currentVersion.version = MAX_ADAPTIVE_VERSIONS;
+
+      const decision = await prepareRuntimeReplanWithTraceSynthesis({
+        adaptive,
+        runtimeInput: {},
+        result: mockResult,
+        environment: mockEnv,
+      });
+
+      expect(decision.decision).toBe("stop");
+    });
+
+    it("should build execution trace from harness state failures", async () => {
+      const resultWithFailures: CompiledHarnessResult = {
+        ...mockResult,
+        harnessState: {
+          ...mockResult.harnessState,
+          nodeResults: { start: { stdout: "test" }, "other-node": { stdout: "done" } },
+          failures: [
+            {
+              domainType: "lasso",
+              rootCause: "tool_missing",
+              nodeId: "start",
+              message: "bash: command not found",
+            },
+          ],
+        },
+      };
+
+      const wrapped = prepareInitialAdaptiveInput(mockRequest, mockSpec, {});
+      const adaptive = unwrapAdaptiveInput(wrapped).metadata!;
+
+      const decision = await prepareRuntimeReplanWithTraceSynthesis({
+        adaptive,
+        runtimeInput: {},
+        result: resultWithFailures,
+        environment: mockEnv,
+      });
+
+      expect(decision.decision).toBe("trace_synthesis");
+      if (decision.decision === "trace_synthesis") {
+        expect(decision.synthesisResult.mutations.length).toBeGreaterThan(0);
+        expect(decision.synthesisResult.rationale.length).toBeGreaterThan(0);
+      }
+    });
+
+    it("should propagate synthesis mutations into next version spec", async () => {
+      const resultWithFailures: CompiledHarnessResult = {
+        ...mockResult,
+        harnessState: {
+          ...mockResult.harnessState,
+          nodeResults: { start: { stdout: "test" }, "other-node": { stdout: "done" } },
+          failures: [
+            {
+              domainType: "lasso",
+              rootCause: "tool_missing",
+              nodeId: "start",
+              message: "bash: command not found",
+            },
+          ],
+        },
+      };
+
+      const wrapped = prepareInitialAdaptiveInput(mockRequest, mockSpec, {});
+      const adaptive = unwrapAdaptiveInput(wrapped).metadata!;
+
+      const decision = await prepareRuntimeReplanWithTraceSynthesis({
+        adaptive,
+        runtimeInput: {},
+        result: resultWithFailures,
+        environment: mockEnv,
+      });
+
+      if (decision.decision === "trace_synthesis" && decision.nextVersion) {
+        expect(decision.nextVersion.spec).toBeDefined();
+        expect(decision.nextVersion.spec.graph.nodes.length).toBeGreaterThanOrEqual(
+          mockSpec.graph.nodes.length,
+        );
       }
     });
   });

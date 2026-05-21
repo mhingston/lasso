@@ -75,6 +75,45 @@ export interface BaseNode {
 
   /** Verification policy for this node */
   verificationPolicy?: VerificationPolicy;
+
+  /** Per-node guardrails — limits that apply only during this node's execution */
+  guardrails?: NodeGuardrails;
+
+  /** Per-node verification hooks — run after this specific node completes */
+  verificationHooks?: VerificationHook[];
+}
+
+export interface NodeGuardrails {
+  /** Max execution time for this node in seconds */
+  timeoutSeconds?: number;
+  /** Max retries for this node (overrides global retryPolicy) */
+  maxRetries?: number;
+  /** Max cost in USD for this node (for LLM nodes) */
+  maxCostUsd?: number;
+  /** Custom guardrail expressions that must hold true */
+  constraints?: string[];
+}
+
+/**
+ * Inline verification hook that runs after the declaring node completes.
+ * Unlike {@link VerificationRule}, which references a separate verifier node
+ * in the graph (node-based verification), a VerificationHook defines an
+ * inline check (string expression, LLM prompt, or tool call) that executes
+ * as part of the same node's lifecycle. Both serve similar purposes through
+ * different mechanisms: hooks are lightweight and co-located, while rules
+ * allow full graph-node verification logic with independent inputs/outputs.
+ */
+export interface VerificationHook {
+  /** Hook name for identification */
+  name: string;
+  /** Kind of verification */
+  kind: "tool" | "llm" | "expression";
+  /** The check to run (tool name, prompt, or expression) */
+  check: string;
+  /** What to do on failure */
+  onFail: "block" | "warn" | "retry";
+  /** Max verification attempts (optional) */
+  maxAttempts?: number;
 }
 
 /** Execute a tool command */

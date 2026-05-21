@@ -1,10 +1,11 @@
 import type { HarnessSpec } from "../spec/types.js";
 import type { EnvironmentModel, EnvironmentAnalysis } from "../environment/types.js";
 import type { FailureSignature } from "../failures/ontology.js";
-import type { MemoryAdvice, MemoryStore } from "../memory/types.js";
+import type { MemoryAdvice } from "../memory/types.js";
 import type { CapabilityRegistry } from "../capabilities/types.js";
 import type { MutationPolicy, HarnessMutation } from "../mutation/types.js";
-import type { MetaHarnessConfig, MetaHarnessResult, MetaHarness } from "./types.js";
+import type { MetaHarnessConfig, MetaHarnessResult, MetaHarness, ExecutionTrace, HarnessSynthesisResult } from "./types.js";
+import { buildTraceEntries } from "./trace-adapter.js";
 import type { CompilerAnalysis } from "../compiler/feedback.js";
 import type { HarnessStage, CompositionResult } from "../composition/types.js";
 import { discoverEnvironment } from "../environment/discovery.js";
@@ -19,11 +20,12 @@ import { compileHarnessSpec } from "../compiler/compile.js";
 import { analyzeCompiledWorkflow } from "../compiler/feedback.js";
 import { predictFailuresFromEnvironment } from "./predictor.js";
 import { generateFailureModes } from "../failures/generator.js";
-import { deriveMutationsFromFailure } from "../mutation/derive.js";
+import { deriveMutationsFromFailure, deriveMutationsFromTrace } from "../mutation/derive.js";
 import { mutateHarness } from "../mutation/engine.js";
 import { chainHarnesses } from "../composition/chain.js";
 import { parallelHarnesses } from "../composition/parallel.js";
 import { conditionalHarness } from "../composition/conditional.js";
+import { classifyFailure } from "../failures/ontology.js";
 
 export class DefaultMetaHarness implements MetaHarness {
   constructor(private config: MetaHarnessConfig) {}
@@ -189,6 +191,89 @@ export class DefaultMetaHarness implements MetaHarness {
     };
   }
 
+  async synthesizeFromTrace(
+    trace: ExecutionTrace,
+    currentSpec: HarnessSpec,
+    environment: EnvironmentModel,
+  ): Promise<HarnessSynthesisResult> {
+    const rationale: string[] = [];
+    const allMutations: HarnessMutation[] = [];
+
+    // 1. Analyze trace for patterns
+    const repeatedFailures = findRepeatedFailures(trace.failedNodes);
+    const slowNodes = findSlowNodes(trace.completedNodes);
+    const costSpike = detectCostSpike(trace);
+
+    for (const [nodeId, count] of repeatedFailures) {
+      rationale.push(`Repeated failures (${count}x) on node "${nodeId}"`);
+    }
+    for (const [nodeId, durationMs] of slowNodes) {
+      rationale.push(`Slow node "${nodeId}": ${durationMs}ms duration`);
+    }
+    if (costSpike) {
+      rationale.push(`cost spike detected: $${trace.totalCostUsd?.toFixed(2) ?? "0.00"} total`);
+    }
+
+    // 2. Classify each failure and derive mutations
+    for (const failedNode of trace.failedNodes) {
+      const signature = classifyFailure(failedNode.error, { nodeId: failedNode.nodeId });
+      const mutations = deriveMutationsFromFailure(signature, currentSpec, { nodeId: failedNode.nodeId });
+      allMutations.push(...mutations);
+
+      if (mutations.length > 0) {
+        rationale.push(
+          `Classified failure on "${failedNode.nodeId}" as ${signature.class}, derived ${mutations.length} mutation(s)`,
+        );
+      }
+    }
+
+    // 3. Also derive mutations from the full trace using existing trace analysis
+    const traceEntries = buildTraceEntries(trace);
+    const traceMutations = deriveMutationsFromTrace(
+      {
+        entries: traceEntries,
+        totalDurationMs: trace.completedNodes.reduce(
+          (sum, n) => sum + (n.completedAt - n.startedAt), 0,
+        ),
+        nodeCount: trace.completedNodes.length + trace.failedNodes.length,
+        failureCount: trace.failedNodes.length,
+        startTimeMs: Math.min(
+          ...[...trace.completedNodes, ...trace.failedNodes].map(n => n.startedAt),
+          Date.now(),
+        ),
+        endTimeMs: trace.capturedAt,
+      },
+      currentSpec,
+    );
+    allMutations.push(...traceMutations);
+
+    if (traceMutations.length > 0) {
+      rationale.push(`Derived ${traceMutations.length} mutation(s) from execution trace patterns`);
+    }
+
+    // 4. Apply mutation policy if configured
+    const limitedMutations = this.config.mutationPolicy
+      ? enforceMutationPolicy(allMutations, this.config.mutationPolicy)
+      : allMutations;
+
+    // 5. Apply mutations
+    let updatedSpec = currentSpec;
+    if (limitedMutations.length > 0) {
+      const result = mutateHarness(currentSpec, limitedMutations);
+      updatedSpec = result.spec;
+    }
+
+    // 6. Determine decision
+    const decision = determineDecision(trace, rationale);
+
+    return {
+      mutations: limitedMutations,
+      spec: updatedSpec,
+      rationale,
+      decision,
+    };
+  }
+
   composeHarnesses(stages: HarnessStage[]): CompositionResult {
     return chainHarnesses(stages);
   }
@@ -253,4 +338,62 @@ function calculateReadinessScore(
   }
 
   return Math.min(100, Math.max(0, score));
+}
+
+function findRepeatedFailures(failedNodes: ExecutionTrace["failedNodes"]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const node of failedNodes) {
+    counts.set(node.nodeId, (counts.get(node.nodeId) ?? 0) + 1);
+  }
+  const repeated = new Map<string, number>();
+  for (const [nodeId, count] of counts) {
+    if (count >= 2) {
+      repeated.set(nodeId, count);
+    }
+  }
+  return repeated;
+}
+
+const SLOW_NODE_THRESHOLD_MS = 30_000;
+
+function findSlowNodes(
+  completedNodes: ExecutionTrace["completedNodes"],
+): Map<string, number> {
+  const slow = new Map<string, number>();
+  for (const node of completedNodes) {
+    const duration = node.completedAt - node.startedAt;
+    if (duration >= SLOW_NODE_THRESHOLD_MS) {
+      slow.set(node.nodeId, duration);
+    }
+  }
+  return slow;
+}
+
+const COST_SPIKE_THRESHOLD_USD = 5.0;
+
+function detectCostSpike(trace: ExecutionTrace): boolean {
+  return (trace.totalCostUsd ?? 0) >= COST_SPIKE_THRESHOLD_USD;
+}
+
+function determineDecision(
+  trace: ExecutionTrace,
+  rationale: string[],
+): HarnessSynthesisResult["decision"] {
+  const totalNodes = trace.completedNodes.length + trace.failedNodes.length;
+
+  const requiresHuman = trace.failedNodes.some(
+    n => n.error.toLowerCase().includes("approval required")
+      || n.error.toLowerCase().includes("human intervention"),
+  );
+  if (requiresHuman) {
+    rationale.push("Failure requires human intervention");
+    return "needs_operator_input";
+  }
+
+  if (totalNodes > 0 && trace.failedNodes.length === totalNodes) {
+    rationale.push("All nodes have failed — stopping execution");
+    return "stop";
+  }
+
+  return "continue";
 }

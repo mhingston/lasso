@@ -23,6 +23,9 @@
   - [Harness mutations](#harness-mutations)
   - [Guardrails](#guardrails)
   - [Failure mode generation](#failure-mode-generation)
+  - [Risk assessment](#risk-assessment)
+  - [Per-node harnesses](#per-node-harnesses)
+  - [Trace-based synthesis](#trace-based-synthesis)
   - [Adaptive runtime](#adaptive-runtime)
   - [Lineage persistence](#lineage-persistence)
   - [Harness memory](#harness-memory)
@@ -44,15 +47,19 @@ Intent
   → Memory query (past patterns, what worked/failed)
   → Graph synthesis (planner + capabilities)
   → Failure prediction (auth, tool, network, resource)
+  → Risk assessment (probability × impact, threshold filtering)
   → Policy synthesis (mutations: add verification, retry, approval)
   → Compilation (validate → lower → optimize → execute)
-  → Runtime adaptation (trace → mutate → continueAsNew)
+  → Per-node harnesses (guardrails, verification hooks)
+  → Runtime adaptation (trace → synthesize → continueAsNew)
 ```
 
 ## What is Lasso?
 
-Lasso is a **dynamic harness engine** built on [pi-duroxide](https://github.com/mhingston/pi-duroxide). It's a TypeScript package that plugs into
-pi via the `pi` field in `package.json`. When installed, it:
+Lasso is a **runtime harness synthesizer** built on [pi-duroxide](https://github.com/mhingston/pi-duroxide). It
+synthesizes deterministic scaffolding around non-deterministic parts — predicting
+failures, assessing risks, and generating per-node guardrails before execution.
+It's a TypeScript package that plugs into pi via the `pi` field in `package.json`. When installed, it:
 
 1. Boots [pi-duroxide](https://github.com/mhingston/pi-duroxide) (the durable workflow runtime)
 2. Registers 5 slash commands (`/lasso:plan`, `/lasso:run`, etc.)
@@ -153,9 +160,13 @@ buildTaskGraph() → TaskGraph
   ↓
 analyzeRisks() → RiskModel
   ↓
+generateFailureModes() → FailureMode[] + Risk[]
+  ↓
+assessRisks() → RiskAssessment (overallScore, threshold filtering)
+  ↓
 synthesizePolicy() → PolicyBundle
   ↓
-synthesizeHarness() → HarnessSpec
+synthesizeHarness() → HarnessSpec (with per-node guardrails & verification hooks)
   ↓
 compileHarnessSpec() → CompiledWorkflow → pi-duroxide
 ```
@@ -167,7 +178,9 @@ Workflow executes
   ↓
 Execution trace captured (timestamps, I/O snapshots, failures)
   ↓
-deriveMutationsFromTrace() → HarnessMutation[]
+synthesizeFromTrace(trace, currentSpec, env) → HarnessSynthesisResult
+  → classifies repeated failures, slow nodes, cost spikes
+  → derives mutations
   ↓
 mutateHarness(spec, mutations) → new spec
   ↓
@@ -389,6 +402,13 @@ All top-level objects are **strict**. Unknown fields are rejected.
 | `merge` | `waitFor`, `strategy` | Fork-join synchronization |
 | `subworkflow` | `specRef`, `inputs` | `ctx.scheduleSubOrchestration()` |
 
+**Per-node fields** (available on all node kinds via `BaseNode`):
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| `guardrails` | `NodeGuardrails` | Per-node limits (timeout, retries, cost, constraints) |
+| `verificationHooks` | `VerificationHook[]` | Inline checks that run after this node completes |
+
 ### Validation rules
 
 1. Node IDs must be unique
@@ -498,6 +518,131 @@ const generation = generateFailureModes("Deploy my app to staging", env);
 Failure modes are cross-referenced with environment constraints: if auth
 constraint detected, auth failure probability is boosted. Each mode includes
 triggers, mitigations, and recovery actions.
+
+`generateFailureModes()` now returns `risks: Risk[]` alongside `failureModes`,
+converting each failure mode into a quantified risk with probability, impact,
+and score.
+
+### Risk assessment
+
+First-class `Risk` type with quantitative scoring. Each risk carries probability
+(0-1), impact (0-1), and a composite score. `assessRisks()` filters by threshold
+and returns a structured assessment.
+
+```typescript
+import { generateFailureModes, assessRisks } from "lasso";
+
+const generation = generateFailureModes("Deploy my app to staging", env);
+// generation.risks — Risk[] converted from failure modes
+
+const assessment = assessRisks(generation.risks);
+// assessment.overallScore — average risk score (0-1)
+// assessment.risksAboveThreshold — risks scoring >= highRiskThreshold (default 0.7)
+// assessment.highRiskThreshold — the threshold used
+
+// Custom threshold
+const strict = assessRisks(generation.risks, { highRiskThreshold: 0.5 });
+```
+
+**Risk interface:**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `id` | `string` | Unique risk identifier |
+| `probability` | `number` (0-1) | Likelihood of occurrence |
+| `impact` | `number` (0-1) | Severity if it occurs |
+| `score` | `number` | `probability × impact` |
+| `signals` | `string[]` | Triggers or indicators |
+| `mitigations` | `HarnessMutation[]` | Suggested mitigations as executable mutations |
+| `failureClass` | `FailureClass` | Classification (auth, tool, network, etc.) |
+| `description` | `string` | Human-readable description |
+
+### Per-node harnesses
+
+Every node in a `HarnessSpec` can carry its own guardrails and verification
+hooks. These override global settings and run only during that node's execution.
+
+```json
+{
+  "id": "deploy",
+  "kind": "tool",
+  "tool": "bash",
+  "args": ["./deploy.sh"],
+  "guardrails": {
+    "timeoutSeconds": 120,
+    "maxRetries": 2,
+    "maxCostUsd": 0.10,
+    "constraints": ["exit_code == 0"]
+  },
+  "verificationHooks": [
+    {
+      "name": "health-check",
+      "kind": "tool",
+      "check": "curl -sf http://localhost:3000/health",
+      "onFail": "block",
+      "maxAttempts": 3
+    }
+  ]
+}
+```
+
+**NodeGuardrails:**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `timeoutSeconds` | `number` | Max execution time for this node |
+| `maxRetries` | `number` | Max retries (overrides global retryPolicy) |
+| `maxCostUsd` | `number` | Max LLM cost for this node |
+| `constraints` | `string[]` | Custom expressions that must hold true |
+
+**VerificationHook:**
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `name` | `string` | Hook identifier |
+| `kind` | `"tool" \| "llm" \| "expression"` | Type of check |
+| `check` | `string` | Tool name, LLM prompt, or expression |
+| `onFail` | `"block" \| "warn" \| "retry"` | Action on failure |
+| `maxAttempts` | `number` | Max verification attempts (optional) |
+
+Per-node guardrails override global `executionPolicy` settings. Verification
+hooks run inline after the node completes, with retry/block/warn semantics.
+
+### Trace-based synthesis
+
+`synthesizeFromTrace()` analyzes an execution trace mid-flight, classifies
+failures, and derives mutations — wired into the compiler's adaptation loop.
+
+```typescript
+import { DefaultMetaHarness } from "lasso";
+
+const meta = new DefaultMetaHarness(config);
+
+const trace = {
+  completedNodes: [
+    { nodeId: "build", startedAt: 1, completedAt: 2, costUsd: 0.05 },
+  ],
+  failedNodes: [
+    { nodeId: "deploy", startedAt: 2, failedAt: 3, error: "auth expired", failureClass: "auth", retryCount: 3 },
+  ],
+  totalCostUsd: 0.15,
+  capturedAt: Date.now(),
+};
+
+const result = await meta.synthesizeFromTrace(trace, currentSpec, environment);
+// result.mutations — HarnessMutation[] derived from trace analysis
+// result.spec — mutated HarnessSpec
+// result.rationale — human-readable explanation of changes
+// result.decision — "continue" | "needs_operator_input" | "stop"
+```
+
+The synthesis classifies:
+- **Repeated failures** — same node failing across retries → add verification or block
+- **Slow nodes** — duration spikes → tighten timeout guardrails
+- **Cost spikes** — LLM cost above expected → swap to cheaper model
+
+This feeds directly into the `continueAsNew` path, producing a new harness
+version with repairs applied.
 
 ### Verification engine
 

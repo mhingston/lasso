@@ -1,6 +1,8 @@
 import type { FailureClass } from "./ontology.js";
 import type { EnvironmentModel } from "../environment/types.js";
 import type { HarnessSpec } from "../spec/types.js";
+import type { Risk, RiskAssessment } from "./types.js";
+import type { HarnessMutation } from "../mutation/types.js";
 
 export interface FailureMode {
   id: string;
@@ -15,6 +17,7 @@ export interface FailureMode {
 export interface FailureModeGeneration {
   taskDescription: string;
   failureModes: FailureMode[];
+  risks: Risk[];
   generatedAt: number;
   riskSummary: string;
 }
@@ -211,8 +214,6 @@ const PATTERN_RULES: PatternRule[] = [
     recoveryActions: ["Check path exists", "Correct the file path"],
   },
 ];
-
-let idCounter = 0;
 
 function generateId(cls: FailureClass, index: number): string {
   return `gen-${cls}-${index}-${Date.now().toString(36)}`;
@@ -411,11 +412,86 @@ export function generateFailureModes(
   }
 
   const riskSummary = buildRiskSummary(failureModes);
+  const risks = failureModes.map(failureModeToRisk);
 
   return {
     taskDescription,
     failureModes,
+    risks,
     generatedAt: Date.now(),
     riskSummary,
+  };
+}
+
+const PROBABILITY_MAP: Record<"low" | "medium" | "high", number> = {
+  low: 0.2,
+  medium: 0.5,
+  high: 0.8,
+};
+
+const IMPACT_MAP: Record<FailureClass, number> = {
+  auth: 0.7,
+  network: 0.6,
+  resource: 0.5,
+  semantic: 0.4,
+  tool: 0.6,
+  "environment-drift": 0.3,
+  unknown: 0.3,
+  human: 0.5,
+};
+
+export function probabilityToNumber(probability: "low" | "medium" | "high"): number {
+  return PROBABILITY_MAP[probability];
+}
+
+export function failureClassToImpact(failureClass: FailureClass): number {
+  return IMPACT_MAP[failureClass];
+}
+
+export function failureModeToRisk(mode: FailureMode): Risk {
+  const probability = probabilityToNumber(mode.probability);
+  const impact = failureClassToImpact(mode.failureClass);
+
+  const mitigations: HarnessMutation[] = mode.mitigations.map((description) => ({
+    type: "add-verification" as const,
+    params: {},
+    description,
+  }));
+
+  return {
+    id: mode.id,
+    probability,
+    impact,
+    score: probability * impact,
+    signals: [...mode.triggers],
+    mitigations,
+    failureClass: mode.failureClass,
+    description: mode.description,
+  };
+}
+
+export function assessRisks(
+  risks: Risk[],
+  options?: { highRiskThreshold?: number },
+): RiskAssessment {
+  const highRiskThreshold = options?.highRiskThreshold ?? 0.7;
+
+  if (risks.length === 0) {
+    return {
+      risks: [],
+      overallScore: 0,
+      highRiskThreshold,
+      risksAboveThreshold: [],
+    };
+  }
+
+  const overallScore = risks.reduce((sum, r) => sum + r.score, 0) / risks.length;
+  const risksAboveThreshold = risks.filter((r) => r.score >= highRiskThreshold);
+
+  return {
+    risks,
+    overallScore,
+    highRiskThreshold,
+    risksAboveThreshold,
   };
 }

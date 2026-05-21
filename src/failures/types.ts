@@ -1,3 +1,6 @@
+import type { HarnessMutation } from "../mutation/types.js";
+import type { FailureClass } from "./ontology.js";
+
 export interface FailureRecord {
   domainType: string;
   rootCause:
@@ -11,4 +14,22 @@ export interface FailureRecord {
     | "unknown";
   nodeId?: string;
   message: string;
+}
+
+export interface Risk {
+  id: string;
+  probability: number;
+  impact: number;
+  score: number;
+  signals: string[];
+  mitigations: HarnessMutation[];
+  failureClass: FailureClass;
+  description: string;
+}
+
+export interface RiskAssessment {
+  risks: Risk[];
+  overallScore: number;
+  highRiskThreshold: number;
+  risksAboveThreshold: Risk[];
 }
